@@ -11,6 +11,7 @@ namespace config {
 enum class OutputType {
     Switch,        // "switch"        – simple on/off
     Light,         // "light"         – brightness-controllable (PWM)
+    Number,        // "number"        – generic 0–100 value (valve, pump, etc.)
     SensorOutput,  // "sensor_output" – controlled automatically by a sensor
     CoverUp,       // "cover_up"      – UP direction of a cover/shutter
     CoverDown,     // "cover_down"    – DOWN direction of a cover/shutter

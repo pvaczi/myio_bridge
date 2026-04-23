@@ -38,6 +38,7 @@ static bool bool_or(const json::object& o, std::string_view key, bool fallback =
 static OutputType parse_output_type(const json::object& o) {
     const auto t = str_or(o, "type", "switch");
     if (t == "light")         return OutputType::Light;
+    if (t == "number")        return OutputType::Number;
     if (t == "sensor_output") return OutputType::SensorOutput;
     if (t == "cover_up")      return OutputType::CoverUp;
     if (t == "cover_down")    return OutputType::CoverDown;

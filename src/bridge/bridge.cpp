@@ -51,6 +51,9 @@ std::string cover_cmd_topic(const std::string& p, const std::string& s,
 std::string sensor_state_topic(const std::string& p, const std::string& s, int id) {
     return std::format("{}/{}/sensor/{}/state", p, s, id);
 }
+std::string number_state_topic(const std::string& p, const std::string& s, int id) {
+    return std::format("{}/{}/number/{}/state", p, s, id);
+}
 
 // ── HA discovery JSON helpers ─────────────────────────────────────────────────
 
@@ -96,21 +99,23 @@ std::string make_switch_discovery(const std::string& p, const std::string& s,
 }
 
 std::string make_light_discovery(const std::string& p, const std::string& s,
-                                  const config::PcaConfig& e) {
+                                  const config::PcaConfig& e, bool brightness) {
     const std::string uid  = std::format("myio_{}_pca_{}", s, e.id);
     const std::string base = std::format("{}/{}/light/{}", p, s, e.id);
     json::object o;
-    o["name"]                     = e.name.empty() ? uid : e.name;
-    o["unique_id"]                = uid;
-    o["state_topic"]              = base + "/state";
-    o["command_topic"]            = base + "/set";
-    o["brightness_state_topic"]   = base + "/brightness";
-    o["brightness_command_topic"] = base + "/brightness/set";
-    o["brightness_scale"]         = 255;
-    o["payload_on"]               = "ON";
-    o["payload_off"]              = "OFF";
-    o["retain"]                   = true;
-    o["device"]                   = device_info(s);
+    o["name"]          = e.name.empty() ? uid : e.name;
+    o["unique_id"]     = uid;
+    o["state_topic"]   = base + "/state";
+    o["command_topic"] = base + "/set";
+    if (brightness) {
+        o["brightness_state_topic"]   = base + "/brightness";
+        o["brightness_command_topic"] = base + "/brightness/set";
+        o["brightness_scale"]         = 255;
+    }
+    o["payload_on"]  = "ON";
+    o["payload_off"] = "OFF";
+    o["retain"]      = true;
+    o["device"]      = device_info(s);
     return json::serialize(o);
 }
 
@@ -130,6 +135,42 @@ std::string make_light_discovery(const std::string& p, const std::string& s,
     o["payload_off"]              = "OFF";
     o["retain"]                   = true;
     o["device"]                   = device_info(s);
+    return json::serialize(o);
+}
+
+std::string make_number_discovery(const std::string& p, const std::string& s,
+                                    const config::PcaConfig& e) {
+    const std::string uid  = std::format("myio_{}_pca_{}", s, e.id);
+    const std::string base = std::format("{}/{}/number/{}", p, s, e.id);
+    json::object o;
+    o["name"]                = e.name.empty() ? uid : e.name;
+    o["unique_id"]           = uid;
+    o["state_topic"]         = base + "/state";
+    o["command_topic"]       = base + "/set";
+    o["min"]                 = 0;
+    o["max"]                 = 100;
+    o["step"]                = 1;
+    o["unit_of_measurement"] = "%";
+    o["retain"]              = true;
+    o["device"]              = device_info(s);
+    return json::serialize(o);
+}
+
+std::string make_number_discovery(const std::string& p, const std::string& s,
+                                    const config::PwmConfig& e) {
+    const std::string uid  = std::format("myio_{}_pwm_{}", s, e.id);
+    const std::string base = std::format("{}/{}/number/{}", p, s, e.id);
+    json::object o;
+    o["name"]                = e.name.empty() ? uid : e.name;
+    o["unique_id"]           = uid;
+    o["state_topic"]         = base + "/state";
+    o["command_topic"]       = base + "/set";
+    o["min"]                 = 0;
+    o["max"]                 = 100;
+    o["step"]                = 1;
+    o["unit_of_measurement"] = "%";
+    o["retain"]              = true;
+    o["device"]              = device_info(s);
     return json::serialize(o);
 }
 
@@ -177,7 +218,12 @@ std::string make_sensor_discovery(const std::string& p, const std::string& s,
 // Publishing an empty string to this topic removes the entity from HA.
 
 static std::string pca_discovery_topic(const std::string& s, const config::PcaConfig& e) {
-    const std::string type = (e.type == config::OutputType::Light) ? "light" : "switch";
+    std::string type;
+    switch (e.type) {
+        case config::OutputType::Light:  type = "light";  break;
+        case config::OutputType::Number: type = "number"; break;
+        default:                         type = "switch"; break;
+    }
     return std::format("homeassistant/{}/myio_{}_{}/config", type, s, e.id);
 }
 
@@ -186,7 +232,8 @@ static std::string relay_discovery_topic(const std::string& s, const config::Rel
 }
 
 static std::string pwm_discovery_topic(const std::string& s, const config::PwmConfig& e) {
-    return std::format("homeassistant/light/myio_{}_{}/config", s, e.id);
+    const std::string type = (e.type == config::OutputType::Number) ? "number" : "light";
+    return std::format("homeassistant/{}/myio_{}_{}/config", type, s, e.id);
 }
 
 static std::string sensor_discovery_topic(const std::string& s, const config::SensorConfig& e) {
@@ -256,6 +303,19 @@ net::awaitable<void> ServerBridge::publish_discovery() {
     const auto& p = topic_prefix_;
     const auto& s = cfg_.server_id;
 
+    // Fetch initial state to determine PCA hardware capabilities (pwm flag).
+    // pca_is_pwm_ is a one-time cache — the pwm flag is a hardware property that never changes.
+    if (pca_is_pwm_.empty()) {
+        try {
+            const auto state = co_await client_->async_poll();
+            for (const auto& pca : state.pca_outputs)
+                pca_is_pwm_[pca.id] = pca.is_pwm;
+        } catch (const std::exception& ex) {
+            myio::log(stderr, "[{}] Could not determine PCA capabilities at discovery: {}",
+                      s, ex.what());
+        }
+    }
+
     for (const auto& e : cfg_.pca) {
         // Skip cover endpoints – they are only represented as cover entities
         if (e.type == config::OutputType::CoverUp ||
@@ -263,9 +323,21 @@ net::awaitable<void> ServerBridge::publish_discovery() {
 
         const std::string dtopic = pca_discovery_topic(s, e);
         if (e.enabled) {
-            const std::string payload = (e.type == config::OutputType::Light)
-                ? make_light_discovery(p, s, e)
-                : make_switch_discovery(p, s, e);
+            std::string payload;
+            switch (e.type) {
+                case config::OutputType::Light: {
+                    const bool can_dim = pca_is_pwm_.count(e.id) && pca_is_pwm_.at(e.id);
+                    if (!can_dim)
+                        myio::log(stderr, "[{}] PCA {} configured as light but pwm=0 – "
+                                         "publishing without brightness control", s, e.id);
+                    payload = make_light_discovery(p, s, e, can_dim);
+                    break;
+                }
+                case config::OutputType::Number:
+                    payload = make_number_discovery(p, s, e); break;
+                default:
+                    payload = make_switch_discovery(p, s, e); break;
+            }
             co_await publisher_->async_publish(dtopic, payload, true);
         } else {
             // Undiscovery: empty retained message removes entity from HA
@@ -286,10 +358,14 @@ net::awaitable<void> ServerBridge::publish_discovery() {
 
     for (const auto& e : cfg_.pwm) {
         const std::string dtopic = pwm_discovery_topic(s, e);
-        if (e.enabled)
-            co_await publisher_->async_publish(dtopic, make_light_discovery(p, s, e), true);
-        else
+        if (e.enabled) {
+            const std::string payload = (e.type == config::OutputType::Number)
+                ? make_number_discovery(p, s, e)
+                : make_light_discovery(p, s, e);
+            co_await publisher_->async_publish(dtopic, payload, true);
+        } else {
             co_await publisher_->async_publish(dtopic, "", true);
+        }
     }
 
     for (const auto& e : cfg_.sensors) {
@@ -315,13 +391,22 @@ net::awaitable<void> ServerBridge::publish_discovery() {
 
 net::awaitable<void> ServerBridge::publish_pca_state(const myio::PcaOutput& pca,
                                                        const config::PcaConfig& cfg) {
+    if (cfg.type == config::OutputType::Number) {
+        const int pct = static_cast<int>(std::round(pca.state / 255.0 * 100.0));
+        co_await publisher_->async_publish(
+            number_state_topic(topic_prefix_, cfg_.server_id, pca.id),
+            std::to_string(pct), true);
+        co_return;
+    }
+
     const std::string on_off = (pca.state > pca.turn_off) ? "ON" : "OFF";
     if (cfg.type == config::OutputType::Light) {
         co_await publisher_->async_publish(
             light_state_topic(topic_prefix_, cfg_.server_id, pca.id), on_off, true);
-        co_await publisher_->async_publish(
-            light_bright_topic(topic_prefix_, cfg_.server_id, pca.id),
-            std::to_string(pca.state), true);
+        if (pca.is_pwm)
+            co_await publisher_->async_publish(
+                light_bright_topic(topic_prefix_, cfg_.server_id, pca.id),
+                std::to_string(pca.state), true);
     } else {
         co_await publisher_->async_publish(
             switch_state_topic(topic_prefix_, cfg_.server_id, pca.id), on_off, true);
@@ -343,6 +428,24 @@ net::awaitable<void> ServerBridge::publish_cover_state(const config::CoverConfig
     else                                       state = "stopped";
     co_await publisher_->async_publish(
         cover_state_topic(topic_prefix_, cfg_.server_id, cover.cover_id), state, true);
+}
+
+net::awaitable<void> ServerBridge::publish_pwm_state(const myio::PwmOutput& pwm,
+                                                       const config::PwmConfig& cfg) {
+    if (cfg.type == config::OutputType::Number) {
+        const int pct = static_cast<int>(std::round(pwm.state / 255.0 * 100.0));
+        co_await publisher_->async_publish(
+            number_state_topic(topic_prefix_, cfg_.server_id, pwm.id),
+            std::to_string(pct), true);
+        co_return;
+    }
+
+    const std::string on_off = (pwm.state > pwm.turn_off) ? "ON" : "OFF";
+    co_await publisher_->async_publish(
+        light_state_topic(topic_prefix_, cfg_.server_id, pwm.id), on_off, true);
+    co_await publisher_->async_publish(
+        light_bright_topic(topic_prefix_, cfg_.server_id, pwm.id),
+        std::to_string(pwm.state), true);
 }
 
 net::awaitable<void> ServerBridge::publish_sensor_state(const myio::Sensor& sensor,
@@ -369,12 +472,15 @@ net::awaitable<void> ServerBridge::poll_loop() {
     std::unordered_map<int, const config::PcaConfig*>    pca_map;
     std::unordered_map<int, const config::RelayConfig*>  relay_map;
     std::unordered_map<int, const config::SensorConfig*> sensor_map;
+    std::unordered_map<int, const config::PwmConfig*>    pwm_map;
     for (const auto& e : cfg_.pca)
         if (e.enabled) pca_map[e.id] = &e;
     for (const auto& e : cfg_.relays)
         if (e.enabled) relay_map[e.id] = &e;
     for (const auto& e : cfg_.sensors)
         if (e.enabled) sensor_map[e.id] = &e;
+    for (const auto& e : cfg_.pwm)
+        if (e.enabled) pwm_map[e.id] = &e;
 
     std::unordered_map<int, const config::CoverConfig*> cover_map;
     for (const auto& c : cfg_.covers)
@@ -468,6 +574,17 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 }
             }
 
+            for (const auto& pwm : state.pwm_outputs) {
+                const auto it = pwm_map.find(pwm.id);
+                if (it == pwm_map.end()) continue;
+                auto& last = last_pwm_state_[pwm.id];
+                if (last != pwm.state) {
+                    last = pwm.state;
+                    co_await publish_pwm_state(pwm, *it->second);
+                    myio::log("[{}] PWM {} → {}", cfg_.server_id, pwm.id, pwm.state);
+                }
+            }
+
             for (const auto& sensor : state.sensors) {
                 const auto it = sensor_map.find(sensor.id);
                 if (it == sensor_map.end()) continue;
@@ -543,12 +660,41 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
     if (std::from_chars(id_str.data(), id_str.data() + id_str.size(), id).ec != std::errc{})
         co_return;
 
+    // Number value (0–100, passed through to PCA*/fet* as percentage)
+    if (entity_type == "number" && parts[4] == "set") {
+        const bool is_pca = std::ranges::any_of(cfg_.pca,
+            [id](const auto& e) {
+                return e.id == id && e.enabled && e.type == config::OutputType::Number;
+            });
+        const bool is_pwm = std::ranges::any_of(cfg_.pwm,
+            [id](const auto& e) {
+                return e.id == id && e.enabled && e.type == config::OutputType::Number;
+            });
+        if (!is_pca && !is_pwm) co_return;
+
+        int value = 0;
+        std::from_chars(payload.data(), payload.data() + payload.size(), value);
+        value = std::clamp(value, 0, 100);
+
+        const std::string post = is_pca
+            ? std::format("PCA*{}={}", id,       value)
+            : std::format("fet*{}={}", id - 100, value);
+        myio::log("[{}] Number {} → {}", cfg_.server_id, id, post);
+        co_await client_->async_send_command(post);
+        co_return;
+    }
+
     // Light brightness
     if (entity_type == "light" && parts.size() >= 6 && parts[4] == "brightness" && parts[5] == "set") {
         const bool is_pca_light = std::ranges::any_of(cfg_.pca,
-            [id](const auto& e) { return e.id == id && e.enabled; });
+            [id, this](const auto& e) {
+                return e.id == id && e.enabled && e.type == config::OutputType::Light
+                    && pca_is_pwm_.count(id) && pca_is_pwm_.at(id);
+            });
         const bool is_pwm_light = std::ranges::any_of(cfg_.pwm,
-            [id](const auto& e) { return e.id == id && e.enabled; });
+            [id](const auto& e) {
+                return e.id == id && e.enabled && e.type != config::OutputType::Number;
+            });
         if (!is_pca_light && !is_pwm_light) co_return;
 
         int brightness = 0;
@@ -568,19 +714,23 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
 
     // Switch / light ON-OFF
     if ((entity_type == "switch" || entity_type == "light") && parts[4] == "set") {
-        // Find enabled matching entry
+        // Find enabled matching entry (Number outputs are excluded – they have their own handler above)
         const bool is_pca = std::ranges::any_of(cfg_.pca,
-            [id](const auto& e) { return e.id == id && e.enabled; });
+            [id](const auto& e) {
+                return e.id == id && e.enabled && e.type != config::OutputType::Number;
+            });
         const bool is_relay = std::ranges::any_of(cfg_.relays,
             [id](const auto& e) { return e.id == id && e.enabled; });
         const bool is_pwm = std::ranges::any_of(cfg_.pwm,
-            [id](const auto& e) { return e.id == id && e.enabled; });
+            [id](const auto& e) {
+                return e.id == id && e.enabled && e.type != config::OutputType::Number;
+            });
 
         std::string post;
         if (is_pca) {
             post = (cmd == "ON") ? std::format("PCA_ON={}", id) : std::format("PCA_OFF={}", id);
         } else if (is_pwm) {
-            post = (cmd == "ON") ? std::format("f_ON={}", id) : std::format("f_OFF={}", id);
+            post = (cmd == "ON") ? std::format("f_ON={}", id - 100) : std::format("f_OFF={}", id - 100);
         } else if (is_relay) {
             post = (cmd == "ON") ? std::format("r_ON={}", id) : std::format("r_OFF={}", id);
         } else {
@@ -620,18 +770,22 @@ Bridge::Bridge(config::BridgeConfig              cfg,
 net::awaitable<void> Bridge::run() {
     co_await publisher_->async_connect();
     co_await publisher_->async_subscribe(cfg_.mqtt.topic_prefix + "/#");
-
-    net::steady_timer t(co_await net::this_coro::executor);
-    t.expires_after(5s);
-    co_await t.async_wait(net::use_awaitable);
+    co_await publisher_->async_subscribe("homeassistant/status");
 
     for (auto& srv : servers_)
         co_await srv->publish_discovery();
 
     for (auto& srv : servers_) {
-        net::co_spawn(ioc_,
-            [&srv]() -> net::awaitable<void> { co_await srv->poll_loop(); },
-            net::detached);
+        net::co_spawn(ioc_, srv->poll_loop(),
+            [sid = srv->server_id()](std::exception_ptr ep) {
+                if (ep) {
+                    try { std::rethrow_exception(ep); }
+                    catch (const std::exception& ex) {
+                        myio::log(stderr, "[{}] Poll coroutine crashed: {}",
+                                  sid, ex.what());
+                    }
+                }
+            });
     }
 
     co_await command_loop();
@@ -643,6 +797,14 @@ net::awaitable<void> Bridge::command_loop() {
         std::exception_ptr caught;
         try {
             auto [topic, payload] = co_await publisher_->async_receive();
+
+            if (topic == "homeassistant/status" && payload == "online") {
+                myio::log("[bridge] HA restarted – republishing discovery.");
+                for (auto& srv : servers_)
+                    co_await srv->publish_discovery();
+                continue;
+            }
+
             for (auto& srv : servers_)
                 co_await srv->handle_command(topic, payload);
         } catch (...) {

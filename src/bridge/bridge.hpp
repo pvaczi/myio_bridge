@@ -31,6 +31,7 @@ std::string light_bright_cmd_topic(const std::string& prefix, const std::string&
 std::string cover_state_topic    (const std::string& prefix, const std::string& srv, const std::string& cover_id);
 std::string cover_cmd_topic      (const std::string& prefix, const std::string& srv, const std::string& cover_id);
 std::string sensor_state_topic   (const std::string& prefix, const std::string& srv, int id);
+std::string number_state_topic   (const std::string& prefix, const std::string& srv, int id);
 
 // ── HA MQTT discovery JSON builders ──────────────────────────────────────────
 
@@ -39,8 +40,12 @@ std::string make_switch_discovery(const std::string& prefix, const std::string& 
 std::string make_switch_discovery(const std::string& prefix, const std::string& srv,
                                    const config::RelayConfig& e);
 std::string make_light_discovery (const std::string& prefix, const std::string& srv,
-                                   const config::PcaConfig& e);
+                                   const config::PcaConfig& e, bool brightness);
 std::string make_light_discovery (const std::string& prefix, const std::string& srv,
+                                   const config::PwmConfig& e);
+std::string make_number_discovery(const std::string& prefix, const std::string& srv,
+                                   const config::PcaConfig& e);
+std::string make_number_discovery(const std::string& prefix, const std::string& srv,
                                    const config::PwmConfig& e);
 std::string make_cover_discovery (const std::string& prefix, const std::string& srv,
                                    const config::CoverConfig& c);
@@ -80,6 +85,8 @@ private:
                                               const config::PcaConfig& cfg);
     net::awaitable<void> publish_relay_state(const myio::RelayOutput&   relay,
                                               const config::RelayConfig& cfg);
+    net::awaitable<void> publish_pwm_state  (const myio::PwmOutput&   pwm,
+                                              const config::PwmConfig& cfg);
     net::awaitable<void> publish_cover_state(const config::CoverConfig& cover,
                                               int up_state, int down_state);
     net::awaitable<void> publish_sensor_state(const myio::Sensor&        sensor,
@@ -93,7 +100,11 @@ private:
     // Last known states for change detection
     std::unordered_map<int, int>    last_pca_state_;    // id → state (0–255); negative id = cover combined
     std::unordered_map<int, int>    last_relay_state_;  // id → state (0/1); negative id = cover combined
+    std::unordered_map<int, int>    last_pwm_state_;    // id → state (0–255)
     std::unordered_map<int, double> last_sensor_val_;   // id → value
+
+    // Hardware capability cache (populated once at startup from initial poll)
+    std::unordered_map<int, bool>   pca_is_pwm_;        // id → pwm flag (hardware, never changes)
 };
 
 // ── Bridge – top-level coordinator for all servers ────────────────────────────
