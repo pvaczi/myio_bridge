@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-# CMP0167: FindBoost modul eltávolítva CMake 4.x-ben → BoostConfig.cmake-t használjuk
+# CMP0167: FindBoost module removed in CMake 4.x — use BoostConfig.cmake instead
 cmake_policy(SET CMP0167 NEW)
 
 project(myIO_bridge
@@ -21,8 +21,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         -Wextra
         -Wpedantic
         -Wno-unused-parameter
-        # Clang-en a Boost fejlécek sok figyelmeztetést adnak, ezeket elnyomjuk
-        -Wno-deprecated-declarations
+        -Wno-deprecated-declarations  # Boost headers trigger many on Clang
     )
 elseif(MSVC)
     add_compile_options(
@@ -35,30 +34,30 @@ elseif(MSVC)
 endif()
 
 # ── Boost ─────────────────────────────────────────────────────────────────────
-# Szükséges komponensek:
-#   - Boost.Asio      (header-only, de system + thread kell hozzá)
+# Required components:
+#   - Boost.Asio      (header-only, requires system + thread)
 #   - Boost.Beast     (header-only)
-#   - Boost.JSON      (header-only, de boost_json.cpp-vel fordítjuk)
+#   - Boost.JSON      (header-only, compiled via boost_json.cpp)
 #   - Boost.MQTT5     (header-only)
-#   - Boost.System    (linkelendő)
-#   - Boost.Thread    (linkelendő, Asio igényli Windows-on Clang-gel)
+#   - Boost.System    (linked)
+#   - Boost.Thread    (linked; required by Asio on Windows with Clang)
 #
-# vcpkg esetén:
+# With vcpkg:
 #   vcpkg install boost-asio boost-beast boost-json boost-system boost-thread boost-mqtt5
 #   cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake
 
 find_package(Boost REQUIRED COMPONENTS system thread)
 
-# Boost.JSON: a common/src/boost_json.cpp tartalmazza a src.hpp-t (header-only mód).
-# BOOST_JSON_NO_LIB: ne próbálja auto-linkelni a boost_json.lib-et.
-# BOOST_JSON_SOURCE: jelzi, hogy mi fordítjuk a forrást (nem DLL import).
+# Boost.JSON: src/common/boost_json.cpp includes src.hpp (single compilation unit).
+# BOOST_JSON_NO_LIB: prevent auto-linking boost_json.lib.
+# BOOST_JSON_SOURCE: signals that we compile the source (not a DLL import).
 add_compile_definitions(BOOST_JSON_NO_LIB)
 add_compile_definitions(BOOST_JSON_SOURCE)
 add_compile_definitions(BOOST_MQTT5_NO_LIB)
 add_compile_definitions(BOOST_ASIO_NO_LIB)
 
 # ── common (Static Library) ───────────────────────────────────────────────────
-# Megosztott kód: HTTP kliens, JSON parser, típusok, interfészek
+# Shared code: HTTP client, JSON parser, types, interfaces
 add_library(common STATIC
     src/common/boost_json.cpp
     src/common/dsens_parser.cpp
@@ -78,7 +77,7 @@ target_link_libraries(common
 )
 
 # ── bridge (Executable) ───────────────────────────────────────────────────────
-# Fő MQTT bridge alkalmazás
+# Main MQTT bridge application
 add_executable(bridge
     src/bridge/main.cpp
     src/bridge/bridge.cpp
@@ -94,11 +93,11 @@ target_include_directories(bridge
 
 target_link_libraries(bridge
     PRIVATE
-        common  # Örökli a common/include-ot és a Boost függőségeket
+        common  # inherits common/include and Boost dependencies
 )
 
 # ── discovery (Executable) ────────────────────────────────────────────────────
-# Szervizprogram: lekérdezi a myIO szervereket és generálja a bridge.json-t
+# Service tool: queries myIO servers and generates bridge.json
 add_executable(discovery
     src/discovery/main.cpp
 )
@@ -108,24 +107,24 @@ target_link_libraries(discovery
         common
 )
 
-# ── Windows-specifikus beállítások ────────────────────────────────────────────
+# ── Windows-specific settings ─────────────────────────────────────────────────
 if(WIN32)
-    # Unicode karakterkészlet
+    # Unicode character set
     add_compile_definitions(UNICODE _UNICODE)
 
-    # Winsock2 (Boost.Asio igényli Windows-on)
-    # PUBLIC-ként adjuk a common-hoz, így mindenki örökli
+    # Winsock2 (required by Boost.Asio on Windows)
+    # Added as PUBLIC so all dependents inherit it
     target_link_libraries(common PUBLIC ws2_32 mswsock)
 endif()
 
-# ── Linux/macOS-specifikus beállítások ────────────────────────────────────────
+# ── Linux/macOS-specific settings ─────────────────────────────────────────────
 if(UNIX)
-    # pthreads (Boost.Asio igényli)
+    # pthreads (required by Boost.Asio)
     find_package(Threads REQUIRED)
     target_link_libraries(common PUBLIC Threads::Threads)
 endif()
 
-# ── Telepítési célok ──────────────────────────────────────────────────────────
+# ── Install targets ───────────────────────────────────────────────────────────
 install(TARGETS bridge discovery RUNTIME DESTINATION bin)
 install(FILES
     data/bridge.json
