@@ -514,6 +514,7 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
 
     // Cover command
     if (entity_type == "cover") {
+        if (parts[4] != "set") co_return;
         for (const auto& c : cfg_.covers) {
             if (!c.enabled || c.cover_id != id_str) continue;
             auto ep_on = [](const config::CoverEndpoint& ep) -> std::string {
@@ -543,7 +544,7 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
         co_return;
 
     // Light brightness
-    if (entity_type == "light" && parts.size() >= 6 && parts[4] == "brightness") {
+    if (entity_type == "light" && parts.size() >= 6 && parts[4] == "brightness" && parts[5] == "set") {
         const bool is_pca_light = std::ranges::any_of(cfg_.pca,
             [id](const auto& e) { return e.id == id && e.enabled; });
         const bool is_pwm_light = std::ranges::any_of(cfg_.pwm,
@@ -566,7 +567,7 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
     }
 
     // Switch / light ON-OFF
-    if (entity_type == "switch" || entity_type == "light") {
+    if ((entity_type == "switch" || entity_type == "light") && parts[4] == "set") {
         // Find enabled matching entry
         const bool is_pca = std::ranges::any_of(cfg_.pca,
             [id](const auto& e) { return e.id == id && e.enabled; });
