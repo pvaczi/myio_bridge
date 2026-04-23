@@ -383,6 +383,15 @@ net::awaitable<void> ServerBridge::poll_loop() {
             cover_map[c.down.id] = &c;
         }
 
+    try {
+        const auto info = co_await client_->async_get_info();
+        myio::log("[{}] myIO v{} | {} | serial {} | {} relays, {} PCA | API v{}",
+                  cfg_.server_id, info.version, info.cpu, info.serial,
+                  info.relay_count, info.pca_count, info.api);
+    } catch (const std::exception& ex) {
+        myio::log(stderr, "[{}] Server info unavailable: {}", cfg_.server_id, ex.what());
+    }
+
     myio::log("[{}] Poll loop started, interval={}s",
               cfg_.server_id, cfg_.poll_interval_sec);
 

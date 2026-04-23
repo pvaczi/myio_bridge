@@ -99,6 +99,16 @@ struct JoinerPair {
     std::string element1_name;
 };
 
+// ── Server info (from /info.json) ────────────────────────────────────────────
+struct ServerInfo {
+    std::string serial;
+    std::string version;
+    std::string cpu;
+    int         api         = 0;
+    int         relay_count = 0;   // "RQ"
+    int         pca_count   = 0;   // "PCAQ"
+};
+
 // ── Complete polled state of one myIO server ──────────────────────────────────
 struct ServerState {
     std::string                  server_id;

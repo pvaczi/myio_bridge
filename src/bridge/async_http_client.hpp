@@ -20,6 +20,10 @@ class AsyncHttpClient final : public IMyIOClient {
 public:
     explicit AsyncHttpClient(HttpConfig cfg);
 
+    // GET /info.json → returns server metadata (called once at startup)
+    [[nodiscard]]
+    net::awaitable<ServerInfo> async_get_info() override;
+
     // GET /sens_out.json → parses and returns current state
     [[nodiscard]]
     net::awaitable<ServerState> async_poll() override;

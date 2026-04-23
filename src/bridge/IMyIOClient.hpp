@@ -16,6 +16,10 @@ class IMyIOClient {
 public:
     virtual ~IMyIOClient() = default;
 
+    // Fetches server info (info.json) — called once at startup.
+    [[nodiscard]]
+    virtual net::awaitable<ServerInfo> async_get_info() = 0;
+
     // Polls the server for current state (sens_out.json).
     [[nodiscard]]
     virtual net::awaitable<ServerState> async_poll() = 0;

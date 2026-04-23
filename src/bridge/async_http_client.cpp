@@ -10,6 +10,9 @@
 #include <boost/beast/core/detail/base64.hpp>
 #include <boost/beast/http.hpp>
 
+#include <boost/json.hpp>
+
+#include <charconv>
 #include <format>
 #include <stdexcept>
 #include <string>
@@ -127,6 +130,39 @@ net::awaitable<void> AsyncHttpClient::do_post(std::string_view target,
 }
 
 // ── Public interface ──────────────────────────────────────────────────────────
+
+net::awaitable<ServerInfo> AsyncHttpClient::async_get_info() {
+    namespace json = boost::json;
+    const auto body = co_await do_get("/info.json");
+    const auto& obj = json::parse(body).as_object().at("info").as_object();
+
+    auto str_or = [&](std::string_view key) -> std::string {
+        if (const auto* v = obj.if_contains(key); v && v->is_string())
+            return std::string(v->as_string());
+        return {};
+    };
+    auto int_or = [&](std::string_view key) -> int {
+        const auto* v = obj.if_contains(key);
+        if (!v) return 0;
+        if (v->is_int64()) return static_cast<int>(v->as_int64());
+        if (v->is_string()) {
+            int n = 0;
+            const auto s = v->as_string();
+            std::from_chars(s.data(), s.data() + s.size(), n);
+            return n;
+        }
+        return 0;
+    };
+
+    ServerInfo info;
+    info.serial      = str_or("serial");
+    info.version     = str_or("version");
+    info.cpu         = str_or("CPU");
+    info.api         = int_or("api");
+    info.relay_count = int_or("RQ");
+    info.pca_count   = int_or("PCAQ");
+    co_return info;
+}
 
 net::awaitable<ServerState> AsyncHttpClient::async_poll() {
     const auto json_body = co_await do_get("/sens_out.json");
