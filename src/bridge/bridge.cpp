@@ -548,7 +548,8 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
             const int pct = static_cast<int>(std::round(brightness / 255.0 * 100.0));
             post = std::format("PCA*{}={}", id, pct);
         } else {
-            post = std::format("fet*{}={}", id, brightness);
+            const int pct = static_cast<int>(std::round(brightness / 255.0 * 100.0));
+            post = std::format("fet*{}={}", id - 100, pct);
         }
         myio::log("[{}] Light brightness {} → {}", cfg_.server_id, id, post);
         co_await client_->async_send_command(post);
