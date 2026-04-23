@@ -1,0 +1,31 @@
+# Build könyvtárak (bárhogy is nevezd el őket)
+build/
+out/
+bin/
+obj/
+
+# CMake által generált fájlok
+CMakeCache.txt
+CMakeFiles/
+CMakeSettings.json
+
+# Fordító és IDE specifikus
+.vs/
+.vscode/
+*.sln
+*.vcxproj
+
+# Futtatható állományok és binárisok
+*.exe
+*.o
+*.a
+*.so
+*.dll
+*.pdb
+
+# vcpkg lokális telepítések (ha a projekten belül vannak)
+vcpkg_installed/
+
+# Éles konfigurációs fájlok (jelszavak, IP-k)
+data/bridge.json
+data/discovery_input.json
