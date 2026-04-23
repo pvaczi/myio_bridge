@@ -1,0 +1,16 @@
+[Unit]
+Description=myIO MQTT Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/myio-bridge /etc/myio-bridge/bridge.json
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=myio-bridge
+
+[Install]
+WantedBy=multi-user.target
