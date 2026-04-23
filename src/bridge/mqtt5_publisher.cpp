@@ -75,7 +75,7 @@ net::awaitable<void> MQTT5Publisher::async_subscribe(std::string_view topic_filt
             mqtt5::qos_e::at_least_once,
             mqtt5::no_local_e::no,
             mqtt5::retain_as_published_e::retain,
-            mqtt5::retain_handling_e::send
+            mqtt5::retain_handling_e::not_send
         }
     });
 
