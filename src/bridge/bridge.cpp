@@ -426,11 +426,33 @@ net::awaitable<void> ServerBridge::poll_loop() {
             }
 
             for (const auto& relay : state.relay_outputs) {
+                if (cover_ids.contains(relay.id)) {
+                    const auto* cover = cover_map.count(relay.id) ? cover_map.at(relay.id) : nullptr;
+                    if (!cover) continue;
+
+                    const int other_id = (relay.id == cover->up.id)
+                                           ? cover->down.id : cover->up.id;
+                    int other_state = 0;
+                    for (const auto& o : state.relay_outputs)
+                        if (o.id == other_id) { other_state = o.state ? 1 : 0; break; }
+
+                    const int up_state   = (relay.id == cover->up.id)   ? (relay.state ? 1 : 0) : other_state;
+                    const int down_state = (relay.id == cover->down.id) ? (relay.state ? 1 : 0) : other_state;
+                    const int combined   = up_state * 1000 + down_state;
+
+                    auto& last = last_relay_state_[-(cover->up.id)];
+                    if (last != combined) {
+                        last = combined;
+                        co_await publish_cover_state(*cover, up_state, down_state);
+                    }
+                    continue;
+                }
+
                 const auto it = relay_map.find(relay.id);
                 if (it == relay_map.end()) continue;
                 auto& last = last_relay_state_[relay.id];
-                if (last != relay.state) {
-                    last = relay.state;
+                if (last != static_cast<int>(relay.state)) {
+                    last = relay.state ? 1 : 0;
                     co_await publish_relay_state(relay, *it->second);
                     myio::log("[{}] Relay {} → {}",
                               cfg_.server_id, relay.id, relay.state ? "ON" : "OFF");
@@ -485,10 +507,20 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
     if (entity_type == "cover") {
         for (const auto& c : cfg_.covers) {
             if (!c.enabled || c.cover_id != id_str) continue;
+            auto ep_on = [](const config::CoverEndpoint& ep) -> std::string {
+                return ep.output_type == "relay"
+                    ? std::format("r_ON={}",   ep.id)
+                    : std::format("PCA_ON={}", ep.id);
+            };
+            auto ep_off = [](const config::CoverEndpoint& ep) -> std::string {
+                return ep.output_type == "relay"
+                    ? std::format("r_OFF={}",   ep.id)
+                    : std::format("PCA_OFF={}", ep.id);
+            };
             std::string post;
-            if      (cmd == "OPEN")  post = std::format("PCA_OFF={}&PCA_ON={}",  c.down.id, c.up.id);
-            else if (cmd == "CLOSE") post = std::format("PCA_OFF={}&PCA_ON={}",  c.up.id,   c.down.id);
-            else if (cmd == "STOP")  post = std::format("PCA_OFF={}&PCA_OFF={}", c.up.id,   c.down.id);
+            if      (cmd == "OPEN")  post = ep_off(c.down) + "&" + ep_on(c.up);
+            else if (cmd == "CLOSE") post = ep_off(c.up)   + "&" + ep_on(c.down);
+            else if (cmd == "STOP")  post = ep_off(c.up)   + "&" + ep_off(c.down);
             else co_return;
             myio::log("[{}] Cover {} → {}", cfg_.server_id, c.cover_id, post);
             co_await client_->async_send_command(post);
@@ -503,17 +535,21 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
 
     // Light brightness
     if (entity_type == "light" && parts.size() >= 6 && parts[4] == "brightness") {
-        // Check enabled
-        const bool enabled = std::ranges::any_of(cfg_.pca,
-            [id](const auto& e) { return e.id == id && e.enabled; }) ||
-            std::ranges::any_of(cfg_.pwm,
+        const bool is_pca_light = std::ranges::any_of(cfg_.pca,
             [id](const auto& e) { return e.id == id && e.enabled; });
-        if (!enabled) co_return;
+        const bool is_pwm_light = std::ranges::any_of(cfg_.pwm,
+            [id](const auto& e) { return e.id == id && e.enabled; });
+        if (!is_pca_light && !is_pwm_light) co_return;
 
         int brightness = 0;
         std::from_chars(payload.data(), payload.data() + payload.size(), brightness);
-        const int pct  = static_cast<int>(std::round(brightness / 255.0 * 100.0));
-        const auto post = std::format("PCA*{}={}", id, pct);
+        std::string post;
+        if (is_pca_light) {
+            const int pct = static_cast<int>(std::round(brightness / 255.0 * 100.0));
+            post = std::format("PCA*{}={}", id, pct);
+        } else {
+            post = std::format("fet*{}={}", id, brightness);
+        }
         myio::log("[{}] Light brightness {} → {}", cfg_.server_id, id, post);
         co_await client_->async_send_command(post);
         co_return;
@@ -530,12 +566,13 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
             [id](const auto& e) { return e.id == id && e.enabled; });
 
         std::string post;
-        if (is_pca || is_pwm) {
+        if (is_pca) {
             post = (cmd == "ON") ? std::format("PCA_ON={}", id) : std::format("PCA_OFF={}", id);
+        } else if (is_pwm) {
+            post = (cmd == "ON") ? std::format("f_ON={}", id) : std::format("f_OFF={}", id);
         } else if (is_relay) {
             post = (cmd == "ON") ? std::format("r_ON={}", id) : std::format("r_OFF={}", id);
         } else {
-            // Not enabled – ignore silently
             co_return;
         }
 

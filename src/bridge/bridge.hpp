@@ -91,8 +91,8 @@ private:
     std::unique_ptr<myio::IMyIOClient>  client_;
 
     // Last known states for change detection
-    std::unordered_map<int, int>    last_pca_state_;    // id → state (0–255)
-    std::unordered_map<int, bool>   last_relay_state_;  // id → state
+    std::unordered_map<int, int>    last_pca_state_;    // id → state (0–255); negative id = cover combined
+    std::unordered_map<int, int>    last_relay_state_;  // id → state (0/1); negative id = cover combined
     std::unordered_map<int, double> last_sensor_val_;   // id → value
 };
 
