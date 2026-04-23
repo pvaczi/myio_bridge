@@ -29,3 +29,6 @@ vcpkg_installed/
 # Éles konfigurációs fájlok (jelszavak, IP-k)
 data/bridge.json
 data/discovery_input.json
+
+# Claude Code lokális beállítások
+.claude/settings.json
