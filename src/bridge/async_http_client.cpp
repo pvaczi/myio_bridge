@@ -134,7 +134,8 @@ net::awaitable<void> AsyncHttpClient::do_post(std::string_view target,
 net::awaitable<ServerInfo> AsyncHttpClient::async_get_info() {
     namespace json = boost::json;
     const auto body = co_await do_get("/info.json");
-    const auto& obj = json::parse(body).as_object().at("info").as_object();
+    const auto  doc = json::parse(body);
+    const auto& obj = doc.as_object().at("info").as_object();
 
     auto str_or = [&](std::string_view key) -> std::string {
         if (const auto* v = obj.if_contains(key); v && v->is_string())
