@@ -1,11 +1,36 @@
 {
+  "mqtt": {
+    "host": "192.168.1.100",
+    "port": 1883,
+    "client_id": "myio_bridge",
+    "user": "",
+    "password": "",
+    "topic_prefix": "myio"
+  },
   "servers": [
     {
-      "id": "server1",
+      "id": "vilagitas",
       "host": "192.168.1.10",
       "port": 80,
       "user": "admin",
-      "password": "admin"
+      "password": "admin",
+      "pca_default_type": "light"
+    },
+    {
+      "id": "redony",
+      "host": "192.168.1.11",
+      "port": 80,
+      "user": "admin",
+      "password": "admin",
+      "pca_default_type": "switch"
+    },
+    {
+      "id": "futes",
+      "host": "192.168.1.12",
+      "port": 80,
+      "user": "admin",
+      "password": "admin",
+      "pca_default_type": "switch"
     }
   ]
 }

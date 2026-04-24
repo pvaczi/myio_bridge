@@ -21,12 +21,25 @@ namespace json = boost::json;
 struct InputServer {
     std::string   id;
     std::string   host;
-    std::uint16_t port     = 80;
-    std::string   user     = "admin";
-    std::string   password = "admin";
+    std::uint16_t port             = 80;
+    std::string   user             = "admin";
+    std::string   password         = "admin";
+    std::string   pca_default_type = "switch";  // default HA type for PCA outputs
 };
 
-static std::vector<InputServer> read_input(const std::string& path) {
+struct InputConfig {
+    std::vector<InputServer> servers;
+    json::object             mqtt = {               // passed through verbatim to bridge.json
+        {"host",         "192.168.1.100"},
+        {"port",         1883},
+        {"client_id",    "myio_bridge"},
+        {"user",         ""},
+        {"password",     ""},
+        {"topic_prefix", "myio"}
+    };
+};
+
+static InputConfig read_input(const std::string& path) {
     std::ifstream f(path);
     if (!f)
         throw std::runtime_error(std::format("Cannot open: {}", path));
@@ -36,22 +49,28 @@ static std::vector<InputServer> read_input(const std::string& path) {
     const json::value root = json::parse(content);
     const auto& obj = root.as_object();
 
-    std::vector<InputServer> servers;
+    InputConfig cfg;
+
+    if (const auto* mqtt = obj.if_contains("mqtt"))
+        if (const auto* o = mqtt->if_object())
+            cfg.mqtt = *o;
+
     if (const auto* arr = obj.if_contains("servers")) {
         for (const auto& node : arr->as_array()) {
             const auto& s = node.as_object();
             InputServer is;
-            if (const auto* v = s.if_contains("id"))       is.id       = std::string(v->as_string());
-            if (const auto* v = s.if_contains("host"))     is.host     = std::string(v->as_string());
-            if (const auto* v = s.if_contains("port"))     is.port     = static_cast<std::uint16_t>(v->as_int64());
-            if (const auto* v = s.if_contains("user"))     is.user     = std::string(v->as_string());
-            if (const auto* v = s.if_contains("password")) is.password = std::string(v->as_string());
+            if (const auto* v = s.if_contains("id"))               is.id               = std::string(v->as_string());
+            if (const auto* v = s.if_contains("host"))             is.host             = std::string(v->as_string());
+            if (const auto* v = s.if_contains("port"))             is.port             = static_cast<std::uint16_t>(v->as_int64());
+            if (const auto* v = s.if_contains("user"))             is.user             = std::string(v->as_string());
+            if (const auto* v = s.if_contains("password"))         is.password         = std::string(v->as_string());
+            if (const auto* v = s.if_contains("pca_default_type")) is.pca_default_type = std::string(v->as_string());
             if (is.id.empty() || is.host.empty())
                 throw std::runtime_error("Server entry requires 'id' and 'host'");
-            servers.push_back(std::move(is));
+            cfg.servers.push_back(std::move(is));
         }
     }
-    return servers;
+    return cfg;
 }
 
 // ── id → name lookup map ──────────────────────────────────────────────────────
@@ -64,6 +83,58 @@ build_name_map(const myio::ServerState& state) {
     for (const auto& w : state.pwm_outputs)    m[w.id] = w.name;
     return m;
 }
+
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║  FIRMWARE BUG WORKAROUND                                                    ║
+// ║  Bug:       d_sens_out.json returns empty descriptions for PCA id > 2100.   ║
+// ║  Workaround: fetch /p_desc.xml which returns all PCA names correctly.       ║
+// ║  Remove:    delete fetch_pca_desc() and its call site in make_server_entry  ║
+// ║             once the firmware bug is fixed.                                  ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+//
+// /p_desc.xml format: <N>name</N> where N is 1-based index (real_id = N + 2000).
+// The file is served by the device's HTTP server and is also used by the web UI.
+
+static std::unordered_map<int, std::string>
+fetch_pca_desc(const myio::HttpConfig& hcfg) {
+    std::unordered_map<int, std::string> names;
+    std::string body;
+    try {
+        body = myio::http_get(hcfg, "/p_desc.xml");
+    } catch (const std::exception& ex) {
+        myio::log(stderr, "[discovery] /p_desc.xml unavailable ({}): {}", hcfg.server_id, ex.what());
+        return names;
+    }
+
+    std::size_t pos = 0;
+    while (pos < body.size()) {
+        const auto open = body.find('<', pos);
+        if (open == std::string::npos) break;
+        const auto gt = body.find('>', open);
+        if (gt == std::string::npos) break;
+
+        const std::string tag = body.substr(open + 1, gt - open - 1);
+        pos = gt + 1;
+
+        if (tag.empty() || tag[0] == '/') continue;
+        bool all_digits = std::ranges::all_of(tag,
+            [](unsigned char c) { return std::isdigit(c); });
+        if (!all_digits) continue;
+
+        const int idx = std::stoi(tag);
+        const std::string end_tag = "</" + tag + ">";
+        const auto end = body.find(end_tag, pos);
+        if (end == std::string::npos) continue;
+
+        std::string name = body.substr(pos, end - pos);
+        pos = end + end_tag.size();
+
+        if (!name.empty())
+            names[idx + 2000] = std::move(name);
+    }
+    return names;
+}
+// ── END FIRMWARE BUG WORKAROUND ───────────────────────────────────────────────
 
 // ── Cover candidate detection ─────────────────────────────────────────────────
 // Returns {up_id, down_id} pairs derived from protection pairs.
@@ -171,14 +242,14 @@ static void write_json(std::ostream& out, const json::value& jv, int indent = 0)
 //          _voltage_v, _current_a  (all are stale snapshots)
 
 static json::object make_pca_entry(const myio::PcaOutput& p,
+                                    const std::string& pca_default_type,
+                                    const std::string& name,
                                     const std::string& type_override = "") {
     json::object o;
     o["id"]      = p.id;
-    o["name"]    = p.name;
+    o["name"]    = name;
     o["type"]    = type_override.empty()
-                     ? (p.sensor_controlled ? "sensor_output"
-                        : p.is_pwm          ? "light"
-                                            : "switch")
+                     ? (p.sensor_controlled ? "sensor_output" : pca_default_type)
                      : type_override;
     o["enabled"] = false;
     // Keep only diagnostics that aid configuration decisions
@@ -259,9 +330,20 @@ static json::array make_cover_array(
 }
 
 static json::object make_server_entry(const InputServer& is,
-                                       const myio::ServerState& state) {
-    const auto name_map      = build_name_map(state);
-    const auto cover_cands   = detect_covers(state, name_map);
+                                       const myio::ServerState& state,
+                                       const myio::HttpConfig& hcfg,
+                                       const std::string& pca_default_type) {
+    auto name_map = build_name_map(state);
+
+    // ── FIRMWARE BUG WORKAROUND: supplement empty PCA names (id > 2100) ──────────
+    // Remove fetch_pca_desc() call and this block when firmware is fixed.
+    const auto pca_desc = fetch_pca_desc(hcfg);
+    for (auto& [id, name] : name_map)
+        if (name.empty() && pca_desc.count(id))
+            name = pca_desc.at(id);
+    // ── END FIRMWARE BUG WORKAROUND ───────────────────────────────────────────────
+
+    const auto cover_cands = detect_covers(state, name_map);
 
     // Build set of output ids that are part of a cover
     std::unordered_set<int> cover_ids;
@@ -286,7 +368,8 @@ static json::object make_server_entry(const InputServer& is,
             if (p.id == c.up_id)   { type_override = "cover_up";   break; }
             if (p.id == c.down_id) { type_override = "cover_down"; break; }
         }
-        pca_arr.push_back(make_pca_entry(p, type_override));
+        const std::string name = name_map.count(p.id) ? name_map.at(p.id) : p.name;
+        pca_arr.push_back(make_pca_entry(p, pca_default_type, name, type_override));
     }
     srv["pca"] = std::move(pca_arr);
 
@@ -325,33 +408,26 @@ int main(int argc, char* argv[]) {
     myio::log("[discovery] Input:  {}", input_path);
     myio::log("[discovery] Output: {}", output_path);
 
-    std::vector<InputServer> servers;
+    InputConfig input;
     try {
-        servers = read_input(input_path);
+        input = read_input(input_path);
     } catch (const std::exception& ex) {
         myio::log(stderr, "[discovery] Input error: {}", ex.what());
         return EXIT_FAILURE;
     }
 
-    if (servers.empty()) {
+    if (input.servers.empty()) {
         myio::log(stderr, "[discovery] No servers in input file.");
         return EXIT_FAILURE;
     }
 
     json::object root;
-    root["mqtt"] = json::object{
-        {"host",         "192.168.1.100"},
-        {"port",         1883},
-        {"client_id",    "myio_bridge"},
-        {"user",         ""},
-        {"password",     ""},
-        {"topic_prefix", "myio"}
-    };
+    root["mqtt"] = input.mqtt;
 
     json::array servers_arr;
     bool any_failed = false;
 
-    for (const auto& is : servers) {
+    for (const auto& is : input.servers) {
         myio::log("[discovery] Querying: {} ({}:{}) ...", is.id, is.host, is.port);
 
         myio::HttpConfig hcfg;
@@ -372,7 +448,7 @@ int main(int argc, char* argv[]) {
             myio::log("[discovery]   Protection pairs: {} → cover candidates",
                       state.protection_pairs.size());
 
-            servers_arr.push_back(make_server_entry(is, state));
+            servers_arr.push_back(make_server_entry(is, state, hcfg, is.pca_default_type));
 
         } catch (const std::exception& ex) {
             myio::log(stderr, "[discovery] ERROR ({}): {}", is.id, ex.what());
