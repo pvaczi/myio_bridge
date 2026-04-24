@@ -322,6 +322,16 @@ net::awaitable<void> ServerBridge::publish_discovery() {
             e.type == config::OutputType::CoverDown) continue;
 
         const std::string dtopic = pca_discovery_topic(s, e);
+
+        // Clear stale discovery topics from previous type assignments.
+        // If this PCA was previously a switch and is now a light, HA keeps both
+        // until the old topic is explicitly cleared with an empty retained message.
+        for (const char* t : {"switch", "light", "number"}) {
+            const std::string stale = std::format("homeassistant/{}/myio_{}_{}/config", t, s, e.id);
+            if (stale != dtopic)
+                co_await publisher_->async_publish(stale, "", true);
+        }
+
         if (e.enabled) {
             std::string payload;
             switch (e.type) {
@@ -421,11 +431,13 @@ net::awaitable<void> ServerBridge::publish_relay_state(const myio::RelayOutput& 
 }
 
 net::awaitable<void> ServerBridge::publish_cover_state(const config::CoverConfig& cover,
-                                                         int up_state, int down_state) {
+                                                         int up_state, int down_state, int dir_hint) {
     std::string state;
     if      (up_state > 0 && down_state == 0) state = "opening";
     else if (down_state > 0 && up_state == 0) state = "closing";
-    else                                       state = "stopped";
+    else if (dir_hint > 0)                    state = "open";
+    else if (dir_hint < 0)                    state = "closed";
+    else                                      state = "stopped";
     co_await publisher_->async_publish(
         cover_state_topic(topic_prefix_, cfg_.server_id, cover.cover_id), state, true);
 }
@@ -520,11 +532,15 @@ net::awaitable<void> ServerBridge::poll_loop() {
                     const int up_state   = (pca.id == cover->up.id)   ? pca.state : other_state;
                     const int down_state = (pca.id == cover->down.id) ? pca.state : other_state;
                     const int combined   = up_state * 1000 + down_state;
+                    const int key        = -(cover->up.id);
 
-                    auto& last = last_pca_state_[-(cover->up.id)];
+                    auto& last = last_pca_state_[key];
                     if (last != combined) {
+                        if      (up_state > 0)   last_cover_dir_[key] = +1;
+                        else if (down_state > 0) last_cover_dir_[key] = -1;
                         last = combined;
-                        co_await publish_cover_state(*cover, up_state, down_state);
+                        const int dir = last_cover_dir_.count(key) ? last_cover_dir_.at(key) : 0;
+                        co_await publish_cover_state(*cover, up_state, down_state, dir);
                     }
                     continue;
                 }
@@ -554,11 +570,15 @@ net::awaitable<void> ServerBridge::poll_loop() {
                     const int up_state   = (relay.id == cover->up.id)   ? (relay.state ? 1 : 0) : other_state;
                     const int down_state = (relay.id == cover->down.id) ? (relay.state ? 1 : 0) : other_state;
                     const int combined   = up_state * 1000 + down_state;
+                    const int key        = -(cover->up.id);
 
-                    auto& last = last_relay_state_[-(cover->up.id)];
+                    auto& last = last_relay_state_[key];
                     if (last != combined) {
+                        if      (up_state > 0)   last_cover_dir_[key] = +1;
+                        else if (down_state > 0) last_cover_dir_[key] = -1;
                         last = combined;
-                        co_await publish_cover_state(*cover, up_state, down_state);
+                        const int dir = last_cover_dir_.count(key) ? last_cover_dir_.at(key) : 0;
+                        co_await publish_cover_state(*cover, up_state, down_state, dir);
                     }
                     continue;
                 }
@@ -651,6 +671,29 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
             else co_return;
             myio::log("[{}] Cover {} → {}", cfg_.server_id, c.cover_id, post);
             co_await client_->async_send_command(post);
+
+            // Optimistic state publish + direction tracking.
+            // The poll interval (30 s) is longer than most motor runs, so direction
+            // and state must be set from the command, not from polling.
+            const int key = -(c.up.id);
+            if (cmd == "OPEN") {
+                last_cover_dir_[key] = +1;
+                if (c.up.output_type == "relay") last_relay_state_[key] = 1;
+                else                             last_pca_state_[key]   = 1;
+                co_await publisher_->async_publish(
+                    cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), "opening", true);
+            } else if (cmd == "CLOSE") {
+                last_cover_dir_[key] = -1;
+                if (c.up.output_type == "relay") last_relay_state_[key] = 1;
+                else                             last_pca_state_[key]   = 1;
+                co_await publisher_->async_publish(
+                    cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), "closing", true);
+            } else if (cmd == "STOP") {
+                const int dir = last_cover_dir_.count(key) ? last_cover_dir_.at(key) : 0;
+                const std::string state = (dir > 0) ? "open" : (dir < 0) ? "closed" : "stopped";
+                co_await publisher_->async_publish(
+                    cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), state, true);
+            }
             co_return;
         }
         co_return;
@@ -739,6 +782,25 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
 
         myio::log("[{}] {} {} → {}", cfg_.server_id, entity_type, id, post);
         co_await client_->async_send_command(post);
+
+        // Publish optimistic state immediately so HA doesn't revert to the
+        // old retained state while waiting for the next poll cycle.
+        if (is_pca) {
+            const auto it = std::ranges::find_if(cfg_.pca,
+                [id](const auto& e) { return e.id == id && e.enabled && e.type != config::OutputType::Number; });
+            if (it != cfg_.pca.end()) {
+                const std::string stopic = (it->type == config::OutputType::Light)
+                    ? light_state_topic(topic_prefix_, cfg_.server_id, id)
+                    : switch_state_topic(topic_prefix_, cfg_.server_id, id);
+                co_await publisher_->async_publish(stopic, cmd, true);
+            }
+        } else if (is_relay) {
+            co_await publisher_->async_publish(
+                switch_state_topic(topic_prefix_, cfg_.server_id, id), cmd, true);
+        } else if (is_pwm) {
+            co_await publisher_->async_publish(
+                light_state_topic(topic_prefix_, cfg_.server_id, id), cmd, true);
+        }
     }
 }
 

@@ -88,7 +88,7 @@ private:
     net::awaitable<void> publish_pwm_state  (const myio::PwmOutput&   pwm,
                                               const config::PwmConfig& cfg);
     net::awaitable<void> publish_cover_state(const config::CoverConfig& cover,
-                                              int up_state, int down_state);
+                                              int up_state, int down_state, int dir_hint);
     net::awaitable<void> publish_sensor_state(const myio::Sensor&        sensor,
                                                const config::SensorConfig& cfg);
 
@@ -102,6 +102,7 @@ private:
     std::unordered_map<int, int>    last_relay_state_;  // id → state (0/1); negative id = cover combined
     std::unordered_map<int, int>    last_pwm_state_;    // id → state (0–255)
     std::unordered_map<int, double> last_sensor_val_;   // id → value
+    std::unordered_map<int, int>    last_cover_dir_;    // -(up.id) → last direction: +1=up, -1=down
 
     // Hardware capability cache (populated once at startup from initial poll)
     std::unordered_map<int, bool>   pca_is_pwm_;        // id → pwm flag (hardware, never changes)
