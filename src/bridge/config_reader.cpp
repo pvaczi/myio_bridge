@@ -131,9 +131,10 @@ static ServerConfig parse_server(const json::object& o) {
             if (e.contains("_comment")) continue;
 
             CoverConfig cc;
-            cc.cover_id = str_or(e, "id");
-            cc.name     = str_or(e, "name");
-            cc.enabled  = bool_or(e, "enabled");
+            cc.cover_id          = str_or(e, "id");
+            cc.name              = str_or(e, "name");
+            cc.enabled           = bool_or(e, "enabled");
+            cc.motor_timeout_sec = int_or(e, "motor_timeout_sec", 90);
 
             if (const auto* up   = e.if_contains("up"))
                 cc.up   = parse_endpoint(up->as_object());

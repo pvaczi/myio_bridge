@@ -61,6 +61,7 @@ struct CoverConfig {
     bool          enabled;
     CoverEndpoint up;
     CoverEndpoint down;
+    int           motor_timeout_sec = 90;  // myIO PCA timer value; 0 = disable end-position detection
 };
 
 // ── Configuration for one myIO server ────────────────────────────────────────

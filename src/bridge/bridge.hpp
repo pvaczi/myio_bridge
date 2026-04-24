@@ -29,6 +29,7 @@ std::string light_bright_topic   (const std::string& prefix, const std::string& 
 std::string light_cmd_topic      (const std::string& prefix, const std::string& srv, int id);
 std::string light_bright_cmd_topic(const std::string& prefix, const std::string& srv, int id);
 std::string cover_state_topic    (const std::string& prefix, const std::string& srv, const std::string& cover_id);
+std::string cover_position_topic (const std::string& prefix, const std::string& srv, const std::string& cover_id);
 std::string cover_cmd_topic      (const std::string& prefix, const std::string& srv, const std::string& cover_id);
 std::string sensor_state_topic   (const std::string& prefix, const std::string& srv, int id);
 std::string number_state_topic   (const std::string& prefix, const std::string& srv, int id);
@@ -102,7 +103,8 @@ private:
     std::unordered_map<int, int>    last_relay_state_;  // id → state (0/1); negative id = cover combined
     std::unordered_map<int, int>    last_pwm_state_;    // id → state (0–255)
     std::unordered_map<int, double> last_sensor_val_;   // id → value
-    std::unordered_map<int, int>    last_cover_dir_;    // -(up.id) → last direction: +1=up, -1=down
+    std::unordered_map<int, int>                    last_cover_dir_;     // -(up.id) → +1=up, -1=down
+    std::unordered_map<int, std::shared_ptr<bool>> last_cover_cancel_;  // -(up.id) → motor timeout cancel flag
 
     // Hardware capability cache (populated once at startup from initial poll)
     std::unordered_map<int, bool>   pca_is_pwm_;        // id → pwm flag (hardware, never changes)

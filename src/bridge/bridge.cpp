@@ -44,6 +44,10 @@ std::string cover_state_topic(const std::string& p, const std::string& s,
                                const std::string& cid) {
     return std::format("{}/{}/cover/{}/state", p, s, cid);
 }
+std::string cover_position_topic(const std::string& p, const std::string& s,
+                                  const std::string& cid) {
+    return std::format("{}/{}/cover/{}/position", p, s, cid);
+}
 std::string cover_cmd_topic(const std::string& p, const std::string& s,
                              const std::string& cid) {
     return std::format("{}/{}/cover/{}/set", p, s, cid);
@@ -186,6 +190,8 @@ std::string make_cover_discovery(const std::string& p, const std::string& s,
     o["payload_open"]  = "OPEN";
     o["payload_close"] = "CLOSE";
     o["payload_stop"]  = "STOP";
+    o["state_topic"]   = std::format("{}/{}/cover/{}/state",    p, s, c.cover_id);
+    o["position_topic"]= std::format("{}/{}/cover/{}/position", p, s, c.cover_id);
     o["state_open"]    = "open";
     o["state_closed"]  = "closed";
     o["state_opening"] = "opening";
@@ -388,10 +394,14 @@ net::awaitable<void> ServerBridge::publish_discovery() {
 
     for (const auto& c : cfg_.covers) {
         const std::string dtopic = cover_discovery_topic(s, c);
-        if (c.enabled)
+        if (c.enabled) {
             co_await publisher_->async_publish(dtopic, make_cover_discovery(p, s, c), true);
-        else
+            // Reset any stale retained state (e.g. "open"/"closed" from a previous run)
+            co_await publisher_->async_publish(cover_state_topic(p, s, c.cover_id), "stopped", true);
+            co_await publisher_->async_publish(cover_position_topic(p, s, c.cover_id), "50", true);
+        } else {
             co_await publisher_->async_publish(dtopic, "", true);
+        }
     }
 
     myio::log("[{}] Discovery published.", cfg_.server_id);
@@ -435,11 +445,18 @@ net::awaitable<void> ServerBridge::publish_cover_state(const config::CoverConfig
     std::string state;
     if      (up_state > 0 && down_state == 0) state = "opening";
     else if (down_state > 0 && up_state == 0) state = "closing";
-    else if (dir_hint > 0)                    state = "open";
-    else if (dir_hint < 0)                    state = "closed";
-    else                                      state = "stopped";
+    else                                       state = "stopped";
     co_await publisher_->async_publish(
         cover_state_topic(topic_prefix_, cfg_.server_id, cover.cover_id), state, true);
+    // Publish position when stopped so HA knows the cover is not at an end stop.
+    // Without position, HA auto-transitions "stopped" to "open" or "closed",
+    // which grays out one direction button.
+    if (state == "stopped") {
+        const int pos = (dir_hint > 0) ? 100 : (dir_hint < 0) ? 0 : 50;
+        co_await publisher_->async_publish(
+            cover_position_topic(topic_prefix_, cfg_.server_id, cover.cover_id),
+            std::to_string(pos), true);
+    }
 }
 
 net::awaitable<void> ServerBridge::publish_pwm_state(const myio::PwmOutput& pwm,
@@ -689,10 +706,39 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
                 co_await publisher_->async_publish(
                     cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), "closing", true);
             } else if (cmd == "STOP") {
-                const int dir = last_cover_dir_.count(key) ? last_cover_dir_.at(key) : 0;
-                const std::string state = (dir > 0) ? "open" : (dir < 0) ? "closed" : "stopped";
                 co_await publisher_->async_publish(
-                    cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), state, true);
+                    cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), "stopped", true);
+                co_await publisher_->async_publish(
+                    cover_position_topic(topic_prefix_, cfg_.server_id, c.cover_id), "50", true);
+                if (last_cover_cancel_.count(key))
+                    *last_cover_cancel_[key] = true;
+            }
+
+            // After OPEN/CLOSE, the motor stops on its own when it reaches the end stop.
+            // The poll may not catch this within the 30 s interval, leaving HA stuck in
+            // "opening"/"closing". Spawn a timer that publishes "stopped" after 90 s as
+            // a safety net. If the user presses STOP first, or the poll catches it sooner,
+            // this publish is a harmless duplicate.
+            if (cmd == "OPEN" || cmd == "CLOSE") {
+                if (c.motor_timeout_sec > 0) {
+                    const int end_pos = (cmd == "OPEN") ? 100 : 0;
+                    auto flag = std::make_shared<bool>(false);
+                    last_cover_cancel_[key] = flag;
+                    net::co_spawn(co_await net::this_coro::executor,
+                        [pub = publisher_, prefix = topic_prefix_,
+                         sid = cfg_.server_id, cov_id = c.cover_id,
+                         end_pos, timeout = c.motor_timeout_sec, flag]
+                        () -> net::awaitable<void> {
+                            net::steady_timer t(co_await net::this_coro::executor);
+                            t.expires_after(std::chrono::seconds(timeout));
+                            co_await t.async_wait(net::use_awaitable);
+                            if (*flag) co_return;  // STOP was pressed, skip end-position publish
+                            co_await pub->async_publish(
+                                cover_state_topic(prefix, sid, cov_id), "stopped", true);
+                            co_await pub->async_publish(
+                                cover_position_topic(prefix, sid, cov_id), std::to_string(end_pos), true);
+                        }(), net::detached);
+                }
             }
             co_return;
         }
