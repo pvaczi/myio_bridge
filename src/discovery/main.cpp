@@ -294,7 +294,8 @@ static json::object make_sensor_entry(const myio::Sensor& s) {
 
 static json::array make_cover_array(
     const std::vector<CoverCandidate>& candidates,
-    const std::unordered_map<int, std::string>& name_map)
+    const std::unordered_map<int, std::string>& name_map,
+    const std::unordered_map<int, int>& timer_map)   // id → timer_sec (0 = none)
 {
     json::array covers;
     for (const auto& c : candidates) {
@@ -303,10 +304,17 @@ static json::array make_cover_array(
             return (it != name_map.end() && !it->second.empty())
                      ? it->second : std::format("id_{}", id);
         };
+        auto get_timer = [&](int id) {
+            auto it = timer_map.find(id);
+            return (it != timer_map.end()) ? it->second : 0;
+        };
         json::object cover;
         cover["id"]      = std::format("cover_{}", c.protection_index);
         cover["name"]    = get_name(c.up_id);  // name suggestion from UP output
         cover["enabled"] = false;
+        // Use the larger of the two endpoint timers (guards against misconfiguration)
+        const int timer = std::max(get_timer(c.up_id), get_timer(c.down_id));
+        if (timer > 0) cover["motor_timeout_sec"] = timer;
         cover["up"]   = json::object{
             {"type", c.output_type}, {"id", c.up_id},
             {"_name", get_name(c.up_id)}
@@ -344,6 +352,11 @@ static json::object make_server_entry(const InputServer& is,
         if (name.empty() && pca_desc.count(id))
             name = pca_desc.at(id);
     // ── END FIRMWARE BUG WORKAROUND ───────────────────────────────────────────────
+
+    // id → motor timer in seconds (0-based PCA index → real id 2001+)
+    std::unordered_map<int, int> pca_timer_map;
+    for (const auto& p : state.pca_outputs)
+        if (p.timer_sec > 0) pca_timer_map[p.id] = p.timer_sec;
 
     const auto cover_cands = detect_covers(state, name_map);
 
@@ -397,7 +410,7 @@ static json::object make_server_entry(const InputServer& is,
         sensor_arr.push_back(make_sensor_entry(s));
     srv["sensors"] = std::move(sensor_arr);
 
-    srv["covers"] = make_cover_array(cover_cands, name_map);
+    srv["covers"] = make_cover_array(cover_cands, name_map, pca_timer_map);
     return srv;
 }
 

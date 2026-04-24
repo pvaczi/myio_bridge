@@ -74,6 +74,7 @@ static void parse_pca(const json::object& obj, ServerState& state) {
         p.turn_off          = int_or(*entry, "turnOFF");
         p.turn_on           = int_or(*entry, "turnON", 255);
         p.is_pwm            = bool_flag(*entry, "pwm");
+        p.timer_sec         = int_or(*entry, "timer");
         p.sensor_id         = int_or(*entry, "sensor");
         p.sensor_controlled = p.sensor_id != 0;
         p.sensor_on         = int_or(*entry, "sensorON");
