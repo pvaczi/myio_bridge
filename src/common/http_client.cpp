@@ -24,7 +24,7 @@ static std::string base64_encode(std::string_view input) {
     return out;
 }
 
-std::string http_get(const HttpConfig& cfg, std::string_view target) {
+static std::string fetch_raw_response(const HttpConfig& cfg, std::string_view target) {
     net::io_context ioc;
     beast::tcp_stream stream(ioc);
 
@@ -53,7 +53,15 @@ std::string http_get(const HttpConfig& cfg, std::string_view target) {
     if (ec && ec != net::error::eof && ec != http::error::end_of_stream)
         throw beast::system_error{ec};
 
-    // Extract JSON from the raw response
+    beast::error_code shutdown_ec;
+    stream.socket().shutdown(tcp::socket::shutdown_both, shutdown_ec);
+
+    return raw;
+}
+
+std::string http_get(const HttpConfig& cfg, std::string_view target) {
+    const std::string raw = fetch_raw_response(cfg, target);
+
     const auto json_start = raw.find('{');
     if (json_start == std::string::npos) {
         if (raw.find("401") != std::string::npos)
@@ -68,10 +76,18 @@ std::string http_get(const HttpConfig& cfg, std::string_view target) {
         throw std::runtime_error(
             std::format("[{}] Malformed JSON in response", cfg.host));
 
-    beast::error_code shutdown_ec;
-    stream.socket().shutdown(tcp::socket::shutdown_both, shutdown_ec);
-
     return raw.substr(json_start, json_end - json_start + 1);
+}
+
+std::string http_get_raw(const HttpConfig& cfg, std::string_view target) {
+    const std::string raw = fetch_raw_response(cfg, target);
+
+    if (raw.find("401") != std::string::npos)
+        throw std::runtime_error(
+            std::format("[{}] HTTP 401 – wrong username or password", cfg.host));
+
+    const auto sep = raw.find("\r\n\r\n");
+    return (sep != std::string::npos) ? raw.substr(sep + 4) : raw;
 }
 
 } // namespace myio

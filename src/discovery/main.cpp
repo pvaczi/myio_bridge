@@ -25,6 +25,7 @@ struct InputServer {
     std::string   user             = "admin";
     std::string   password         = "admin";
     std::string   pca_default_type = "switch";  // default HA type for PCA outputs
+    int           poll_interval_sec = 5;
 };
 
 struct InputConfig {
@@ -64,7 +65,8 @@ static InputConfig read_input(const std::string& path) {
             if (const auto* v = s.if_contains("port"))             is.port             = static_cast<std::uint16_t>(v->as_int64());
             if (const auto* v = s.if_contains("user"))             is.user             = std::string(v->as_string());
             if (const auto* v = s.if_contains("password"))         is.password         = std::string(v->as_string());
-            if (const auto* v = s.if_contains("pca_default_type")) is.pca_default_type = std::string(v->as_string());
+            if (const auto* v = s.if_contains("pca_default_type"))  is.pca_default_type  = std::string(v->as_string());
+            if (const auto* v = s.if_contains("poll_interval_sec")) is.poll_interval_sec = static_cast<int>(v->as_int64());
             if (is.id.empty() || is.host.empty())
                 throw std::runtime_error("Server entry requires 'id' and 'host'");
             cfg.servers.push_back(std::move(is));
@@ -100,7 +102,7 @@ fetch_pca_desc(const myio::HttpConfig& hcfg) {
     std::unordered_map<int, std::string> names;
     std::string body;
     try {
-        body = myio::http_get(hcfg, "/p_desc.xml");
+        body = myio::http_get_raw(hcfg, "/p_desc.xml");
     } catch (const std::exception& ex) {
         myio::log(stderr, "[discovery] /p_desc.xml unavailable ({}): {}", hcfg.server_id, ex.what());
         return names;
@@ -358,7 +360,7 @@ static json::object make_server_entry(const InputServer& is,
     srv["port"]              = is.port;
     srv["user"]              = is.user;
     srv["password"]          = is.password;  // TODO: encryption
-    srv["poll_interval_sec"] = 2;
+    srv["poll_interval_sec"] = is.poll_interval_sec;
 
     // PCA outputs – cover endpoints get "cover_up" / "cover_down" type
     json::array pca_arr;

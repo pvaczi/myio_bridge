@@ -14,7 +14,8 @@
       "port": 80,
       "user": "admin",
       "password": "admin",
-      "pca_default_type": "light"
+      "pca_default_type": "light",
+      "poll_interval_sec": 5
     },
     {
       "id": "redony",
@@ -22,7 +23,8 @@
       "port": 80,
       "user": "admin",
       "password": "admin",
-      "pca_default_type": "switch"
+      "pca_default_type": "switch",
+      "poll_interval_sec": 5
     },
     {
       "id": "futes",
@@ -30,7 +32,8 @@
       "port": 80,
       "user": "admin",
       "password": "admin",
-      "pca_default_type": "switch"
+      "pca_default_type": "switch",
+      "poll_interval_sec": 5
     }
   ]
 }

@@ -20,9 +20,14 @@ struct HttpConfig {
     std::chrono::seconds timeout{10};
 };
 
-// Performs an HTTP GET and returns the response body.
+// Performs an HTTP GET and returns the JSON body (extracts { ... } from response).
 // Throws on network or HTTP error.
 [[nodiscard]]
 std::string http_get(const HttpConfig& cfg, std::string_view target = "/");
+
+// Performs an HTTP GET and returns the raw response body (everything after headers).
+// Use this for non-JSON endpoints (e.g. XML).
+[[nodiscard]]
+std::string http_get_raw(const HttpConfig& cfg, std::string_view target);
 
 } // namespace myio
