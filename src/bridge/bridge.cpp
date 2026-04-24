@@ -729,14 +729,19 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
                          sid = cfg_.server_id, cov_id = c.cover_id,
                          end_pos, timeout = c.motor_timeout_sec, flag]
                         () -> net::awaitable<void> {
-                            net::steady_timer t(co_await net::this_coro::executor);
-                            t.expires_after(std::chrono::seconds(timeout));
-                            co_await t.async_wait(net::use_awaitable);
-                            if (*flag) co_return;  // STOP was pressed, skip end-position publish
-                            co_await pub->async_publish(
-                                cover_state_topic(prefix, sid, cov_id), "stopped", true);
-                            co_await pub->async_publish(
-                                cover_position_topic(prefix, sid, cov_id), std::to_string(end_pos), true);
+                            try {
+                                net::steady_timer t(co_await net::this_coro::executor);
+                                t.expires_after(std::chrono::seconds(timeout));
+                                co_await t.async_wait(net::use_awaitable);
+                                if (*flag) co_return;  // STOP was pressed, skip end-position publish
+                                co_await pub->async_publish(
+                                    cover_state_topic(prefix, sid, cov_id), "stopped", true);
+                                co_await pub->async_publish(
+                                    cover_position_topic(prefix, sid, cov_id), std::to_string(end_pos), true);
+                            } catch (const std::exception& ex) {
+                                myio::log(stderr, "[{}] Cover {} motor timer error: {}",
+                                          sid, cov_id, ex.what());
+                            } catch (...) {}
                         }(), net::detached);
                 }
             }
