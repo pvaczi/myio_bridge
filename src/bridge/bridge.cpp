@@ -929,8 +929,17 @@ net::awaitable<void> Bridge::command_loop() {
                 myio::log(stderr, "[bridge] Command loop error: {}", ex.what());
             }
             net::steady_timer t(co_await net::this_coro::executor);
-            t.expires_after(2s);
+            t.expires_after(30s);
             co_await t.async_wait(net::use_awaitable);
+            try {
+                co_await publisher_->async_subscribe(cfg_.mqtt.topic_prefix + "/#");
+                co_await publisher_->async_subscribe("homeassistant/status");
+                myio::log("[bridge] Reconnected – republishing discovery.");
+                for (auto& srv : servers_)
+                    co_await srv->publish_discovery();
+            } catch (const std::exception& ex) {
+                myio::log(stderr, "[bridge] Reconnect setup error: {}", ex.what());
+            }
         }
     }
 }
