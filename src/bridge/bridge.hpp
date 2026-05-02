@@ -108,6 +108,8 @@ private:
 
     // Hardware capability cache (populated once at startup from initial poll)
     std::unordered_map<int, bool>   pca_is_pwm_;        // id → pwm flag (hardware, never changes)
+
+    std::string last_poll_error_;
 };
 
 // ── Bridge – top-level coordinator for all servers ────────────────────────────

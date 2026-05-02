@@ -4,6 +4,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/read.hpp>
 #include <boost/asio/redirect_error.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
@@ -13,6 +14,7 @@
 #include <boost/json.hpp>
 
 #include <charconv>
+#include <chrono>
 #include <format>
 #include <stdexcept>
 #include <string>
@@ -31,20 +33,35 @@ static std::string base64_encode(std::string_view input) {
 }
 
 // Extracts JSON content from a raw HTTP response.
-// Bypasses Beast's HTTP parser because the myIO server sends non-standard headers.
+// Bypasses Beast's HTTP parser because the myIO server sends non-standard headers
+// (uses bare \n instead of \r\n). Searches only in the body to avoid false
+// matches on { or } characters that may appear in HTTP headers.
 static std::string extract_json(const std::string& raw, std::string_view host) {
-    const auto start = raw.find('{');
-    if (start == std::string::npos) {
+    // Find the end of the HTTP header block (\r\n\r\n or bare \n\n).
+    std::size_t body_start = std::string::npos;
+    if (const auto pos = raw.find("\r\n\r\n"); pos != std::string::npos)
+        body_start = pos + 4;
+    else if (const auto pos2 = raw.find("\n\n"); pos2 != std::string::npos)
+        body_start = pos2 + 2;
+
+    if (body_start == std::string::npos) {
         if (raw.find("401") != std::string::npos)
             throw std::runtime_error(
                 std::format("[{}] HTTP 401 – wrong username or password", host));
         throw std::runtime_error(
-            std::format("[{}] No JSON found in response", host));
+            std::format("[{}] No HTTP header terminator found in response", host));
     }
+
+    const auto start = raw.find('{', body_start);
+    if (start == std::string::npos)
+        throw std::runtime_error(
+            std::format("[{}] No JSON found in response body", host));
+
     const auto end = raw.rfind('}');
     if (end == std::string::npos || end < start)
         throw std::runtime_error(
             std::format("[{}] Malformed JSON in response", host));
+
     return raw.substr(start, end - start + 1);
 }
 
@@ -78,8 +95,9 @@ net::awaitable<std::string> AsyncHttpClient::do_get(std::string_view target) {
     // Raw read – bypasses Beast HTTP parser
     std::string raw;
     beast::error_code ec;
+    stream.expires_after(cfg_.timeout);
     co_await net::async_read(
-        stream, net::dynamic_buffer(raw),
+        stream, net::dynamic_buffer(raw, 256 * 1024),
         net::redirect_error(net::use_awaitable, ec));
 
     if (ec && ec != net::error::eof && ec != http::error::end_of_stream)
@@ -121,9 +139,13 @@ net::awaitable<void> AsyncHttpClient::do_post(std::string_view target,
     // Read and discard the myIO response
     std::string raw;
     beast::error_code ec;
+    stream.expires_after(cfg_.timeout);
     co_await net::async_read(
-        stream, net::dynamic_buffer(raw),
+        stream, net::dynamic_buffer(raw, 64 * 1024),
         net::redirect_error(net::use_awaitable, ec));
+
+    if (ec && ec != net::error::eof && ec != http::error::end_of_stream)
+        throw beast::system_error{ec};
 
     beast::error_code sec;
     stream.socket().shutdown(tcp::socket::shutdown_both, sec);
@@ -171,7 +193,27 @@ net::awaitable<ServerState> AsyncHttpClient::async_poll() {
 }
 
 net::awaitable<void> AsyncHttpClient::async_send_command(std::string post_body) {
-    co_await do_post("/", post_body);
+    // Retry up to 3 times to handle transient W5100 socket drops.
+    // Delay uses an async timer so the coroutine yield doesn't block the io_context.
+    constexpr int   max_attempts   = 3;
+    constexpr auto  retry_delay    = std::chrono::milliseconds(500);
+
+    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+        bool retry = false;
+        try {
+            co_await do_post("/", post_body);
+            co_return;
+        } catch (const std::exception&) {
+            if (attempt == max_attempts) throw;
+            retry = true;
+        }
+        // co_await must be outside the catch block (C++ coroutine restriction)
+        if (retry) {
+            net::steady_timer timer(co_await net::this_coro::executor);
+            timer.expires_after(retry_delay);
+            co_await timer.async_wait(net::use_awaitable);
+        }
+    }
 }
 
 } // namespace myio

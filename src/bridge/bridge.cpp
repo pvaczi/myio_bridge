@@ -643,8 +643,16 @@ net::awaitable<void> ServerBridge::poll_loop() {
         if (caught) {
             try { std::rethrow_exception(caught); }
             catch (const std::exception& ex) {
-                myio::log(stderr, "[{}] Poll error: {}", cfg_.server_id, ex.what());
+                std::string msg = ex.what();
+                if (msg == last_poll_error_) {
+                    myio::log(stderr, "[{}] Poll error: (same as previous)", cfg_.server_id);
+                } else {
+                    last_poll_error_ = msg;
+                    myio::log(stderr, "[{}] Poll error: {}", cfg_.server_id, msg);
+                }
             }
+        } else {
+            last_poll_error_.clear();
         }
 
         net::steady_timer timer(ex);
