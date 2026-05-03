@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>myIO Bridge Control</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <style>
+    body { padding: 1.5rem; background: #f8f9fa; }
+    .status-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; }
+    .status-active { background: #198754; }
+    .status-inactive { background: #dc3545; }
+    .status-unknown { background: #6c757d; }
+    #discovery-log { height: 180px; font-family: monospace; font-size: 0.82rem; resize: vertical; }
+    #config-textarea { height: 320px; font-family: monospace; font-size: 0.82rem; resize: vertical; }
+    .save-feedback { font-size: 0.88rem; margin-left: 0.75rem; }
+  </style>
+</head>
+<body>
+<div class="container-fluid" style="max-width: 860px;">
+  <h4 class="mb-4">myIO Bridge Control</h4>
+
+  <div class="row g-3 mb-3">
+    <!-- Bridge panel -->
+    <div class="col-md-5">
+      <div class="card h-100">
+        <div class="card-body">
+          <h6 class="card-title">Bridge</h6>
+          <p class="mb-2">
+            <span id="status-dot" class="status-dot status-unknown"></span>
+            <span id="status-text">–</span>
+          </p>
+          <button id="btn-start" class="btn btn-sm btn-success me-2" onclick="bridgeAction('start')">Start</button>
+          <button id="btn-stop" class="btn btn-sm btn-danger" onclick="bridgeAction('stop')">Stop</button>
+          <div id="bridge-error" class="text-danger small mt-2" style="display:none;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Discovery panel -->
+    <div class="col-md-7">
+      <div class="card h-100">
+        <div class="card-body">
+          <h6 class="card-title">Discovery</h6>
+          <button id="btn-discovery" class="btn btn-sm btn-primary mb-2" onclick="runDiscovery()">
+            <span id="discovery-spinner" class="spinner-border spinner-border-sm me-1" style="display:none;"></span>
+            Run Discovery
+          </button>
+          <textarea id="discovery-log" class="form-control" readonly placeholder="Kimenet itt jelenik meg…"></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Config editor -->
+  <div class="card">
+    <div class="card-body">
+      <h6 class="card-title mb-3">Config Editor</h6>
+      <div class="mb-2">
+        <button class="btn btn-sm btn-outline-secondary me-1" onclick="loadConfig('discovery')">Discovery Input</button>
+        <button class="btn btn-sm btn-outline-secondary" onclick="loadConfig('bridge')">Bridge Config</button>
+        <span id="config-name" class="text-muted small ms-2"></span>
+      </div>
+      <textarea id="config-textarea" class="form-control mb-2" placeholder="Válassz egy config fájlt…"></textarea>
+      <button class="btn btn-sm btn-primary" onclick="saveConfig()">Save</button>
+      <span id="save-feedback" class="save-feedback"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentConfig = null;
+
+async function fetchStatus() {
+  try {
+    const r = await fetch('/api/bridge/status');
+    const d = await r.json();
+    const active = d.status === 'active';
+    const dot = document.getElementById('status-dot');
+    dot.className = 'status-dot ' + (active ? 'status-active' : 'status-inactive');
+    document.getElementById('status-text').textContent = d.status;
+  } catch {
+    document.getElementById('status-dot').className = 'status-dot status-unknown';
+    document.getElementById('status-text').textContent = 'ismeretlen';
+  }
+}
+
+async function bridgeAction(action) {
+  const errEl = document.getElementById('bridge-error');
+  errEl.style.display = 'none';
+  const r = await fetch('/api/bridge/' + action, { method: 'POST' });
+  const d = await r.json();
+  if (!d.ok) {
+    errEl.textContent = d.error || 'Hiba';
+    errEl.style.display = '';
+  }
+  await fetchStatus();
+}
+
+async function runDiscovery() {
+  const btn = document.getElementById('btn-discovery');
+  const spinner = document.getElementById('discovery-spinner');
+  const log = document.getElementById('discovery-log');
+  btn.disabled = true;
+  spinner.style.display = '';
+  log.value = 'Futás…';
+  try {
+    const r = await fetch('/api/discovery/run', { method: 'POST' });
+    const d = await r.json();
+    log.value = d.output || (d.ok ? 'Kész.' : 'Hiba.');
+  } catch (e) {
+    log.value = 'Hálózati hiba: ' + e;
+  } finally {
+    btn.disabled = false;
+    spinner.style.display = 'none';
+  }
+}
+
+async function loadConfig(type) {
+  currentConfig = type;
+  document.getElementById('config-name').textContent = type === 'bridge' ? 'bridge.json' : 'discovery_input.json';
+  document.getElementById('save-feedback').textContent = '';
+  const r = await fetch('/api/config/' + type);
+  const d = await r.json();
+  document.getElementById('config-textarea').value = d.ok ? d.content : ('Hiba: ' + d.error);
+}
+
+async function saveConfig() {
+  const fb = document.getElementById('save-feedback');
+  const content = document.getElementById('config-textarea').value;
+  if (!currentConfig) { fb.textContent = 'Először válassz config fájlt.'; fb.style.color = 'orange'; return; }
+  try {
+    JSON.parse(content);
+  } catch (e) {
+    fb.textContent = 'Érvénytelen JSON: ' + e.message;
+    fb.style.color = 'red';
+    return;
+  }
+  const r = await fetch('/api/config/' + currentConfig, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: content
+  });
+  const d = await r.json();
+  if (d.ok) {
+    fb.textContent = 'Mentve.';
+    fb.style.color = 'green';
+  } else {
+    fb.textContent = 'Hiba: ' + (d.error || 'ismeretlen');
+    fb.style.color = 'red';
+  }
+}
+
+fetchStatus();
+setInterval(fetchStatus, 5000);
+</script>
+</body>
+</html>

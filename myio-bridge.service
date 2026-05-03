@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/myio-bridge /etc/myio-bridge/bridge.json
+User=myio
+ExecStart=/opt/myio-bridge/bin/bridge /opt/myio-bridge/data/bridge.json
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

@@ -1,0 +1,12 @@
+{
+  "name": "myio-bridge",
+  "version-string": "1.0.0",
+  "dependencies": [
+    "boost-asio",
+    "boost-beast",
+    "boost-json",
+    "boost-system",
+    "boost-thread",
+    "boost-mqtt5"
+  ]
+}

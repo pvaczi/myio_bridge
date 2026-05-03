@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            cmake ninja-build clang git curl zip unzip pkg-config ca-certificates
+
+      - uses: actions/checkout@v4
+
+      - name: Cache vcpkg
+        uses: actions/cache@v4
+        with:
+          path: /opt/vcpkg
+          key: vcpkg-${{ hashFiles('vcpkg.json') }}
+
+      - name: Bootstrap vcpkg
+        run: |
+          if [ ! -f /opt/vcpkg/vcpkg ]; then
+            git clone https://github.com/microsoft/vcpkg /opt/vcpkg
+            /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          fi
+
+      - name: Configure
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_TOOLCHAIN_FILE=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -G Ninja
+
+      - name: Build
+        run: ninja -C build
+
+      - name: Strip and package
+        run: |
+          strip build/bridge build/discovery
+          tar -czf myio-bridge-linux-x86_64.tar.gz -C build bridge discovery
+
+      - name: Upload release artifact
+        uses: softprops/action-gh-release@v2
+        with:
+          files: myio-bridge-linux-x86_64.tar.gz
