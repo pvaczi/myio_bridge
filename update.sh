@@ -1,8 +1,23 @@
 #!/bin/bash
 set -e
 REPO="pvaczi/myio_bridge"
+SRC_DIR="/tmp/myio-src"
+INSTALL_DIR="/opt/myio-bridge"
 [ -f /etc/myio-bridge.env ] && source /etc/myio-bridge.env
 
+# --- forrás frissítése ---
+if [[ -d "$SRC_DIR/.git" ]]; then
+    git -C "$SRC_DIR" pull
+else
+    git clone "https://${GITHUB_TOKEN}@github.com/${REPO}.git" "$SRC_DIR"
+fi
+
+# --- web UI frissítése ---
+cp -r "$SRC_DIR/web" "$INSTALL_DIR/"
+chown -R myio:myio "$INSTALL_DIR/web"
+systemctl restart myio-web
+
+# --- bináris frissítése ---
 ASSET_ID=$(curl -sf -H "Authorization: Bearer $GITHUB_TOKEN" \
   "https://api.github.com/repos/$REPO/releases/latest" \
   | grep -B3 '"myio-bridge-linux-x86_64\.tar\.gz"' \
