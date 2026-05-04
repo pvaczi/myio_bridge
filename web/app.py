@@ -5,7 +5,7 @@ import subprocess
 from flask import Flask, jsonify, render_template, request
 
 _JOURNAL_LINE = re.compile(r'^(\S+)\s+\S+\s+\S+:\s+(.*)')
-_OWN_TS = re.compile(r'^\d{4}-\d{2}-\d{2}')
+_OWN_TS = re.compile(r'^\[?\d{4}-\d{2}-\d{2}')
 
 app = Flask(__name__)
 
