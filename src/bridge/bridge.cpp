@@ -801,14 +801,9 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
 
         int brightness = 0;
         std::from_chars(payload.data(), payload.data() + payload.size(), brightness);
-        std::string post;
-        if (is_pca_light) {
-            const int pct = static_cast<int>(std::round(brightness / 255.0 * 100.0));
-            post = std::format("PCA*{}={}", id, pct);
-        } else {
-            const int pct = static_cast<int>(std::round(brightness / 255.0 * 100.0));
-            post = std::format("fet*{}={}", id - 100, pct);
-        }
+        const std::string post = is_pca_light
+            ? std::format("PCA*{}={}", id, brightness)
+            : std::format("fet*{}={}", id - 100, brightness);
         myio::log("[{}] Light brightness {} → {}", cfg_.server_id, id, post);
         co_await client_->async_send_command(post);
         co_return;
