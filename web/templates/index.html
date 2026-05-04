@@ -15,9 +15,42 @@
     .log-ta     { height: 300px; font-family: monospace; font-size: 0.78rem; resize: vertical; }
     .disc-log   { height: 160px; font-family: monospace; font-size: 0.82rem; resize: vertical; }
     .save-fb    { font-size: 0.88rem; margin-left: 0.75rem; }
-    #bridge-config-visual { height: 320px; border-radius: 0.375rem; overflow: hidden; }
     .jsoneditor { border: 1px solid #dee2e6 !important; border-radius: 0.375rem !important; }
     .jsoneditor-menu { background-color: #6c757d !important; border-bottom: 1px solid #5c636a !important; border-radius: 0.375rem 0.375rem 0 0 !important; }
+
+    #bridge-config-popup {
+      display: none; position: fixed; z-index: 1050;
+      width: 640px; height: 500px; min-width: 360px; min-height: 220px;
+      background: #fff; border: 1px solid #dee2e6;
+      border-radius: 0.5rem; box-shadow: 0 8px 32px rgba(0,0,0,.2);
+      resize: both; overflow: hidden; flex-direction: column;
+    }
+    #bridge-config-popup.open { display: flex; }
+    #bridge-popup-handle {
+      cursor: move; background: #6c757d; color: #fff;
+      padding: .4rem .75rem; border-radius: .5rem .5rem 0 0;
+      display: flex; align-items: center; gap: .5rem;
+      user-select: none; flex-shrink: 0;
+    }
+    #bridge-popup-handle .popup-title { flex: 1; font-weight: 600; font-size: .9rem; }
+    #bridge-popup-handle .btn-close-popup {
+      background: none; border: none; color: #fff;
+      font-size: 1.1rem; line-height: 1; cursor: pointer; padding: 0 .25rem;
+    }
+    #bridge-popup-body {
+      flex: 1; min-height: 0; display: flex; flex-direction: column;
+      padding: .75rem; overflow: hidden;
+    }
+    #bridge-config {
+      flex: 1; min-height: 60px; resize: none;
+      font-family: monospace; font-size: 0.82rem;
+    }
+    #bridge-config-visual { flex: 1; min-height: 60px; border-radius: 0.375rem; overflow: hidden; }
+    #bridge-popup-footer {
+      display: flex; align-items: center;
+      padding-top: .5rem; margin-top: .5rem;
+      border-top: 1px solid #dee2e6; flex-shrink: 0;
+    }
   </style>
 </head>
 <body>
@@ -50,24 +83,7 @@
     </div>
 
     <div class="mb-3">
-      <button class="btn btn-sm btn-outline-secondary" onclick="toggleBridgeConfig()">
-        <span id="bridge-config-btn-label">bridge.json szerkesztése ▾</span>
-      </button>
-    </div>
-    <div id="bridge-config-card" class="card mb-3" style="display:none;">
-      <div class="card-body">
-        <div class="d-flex align-items-center mb-2">
-          <h6 class="card-title mb-0 me-auto">bridge.json</h6>
-          <div class="btn-group btn-group-sm" role="group">
-            <button class="btn btn-outline-secondary active" id="btn-editor-raw"    onclick="switchBridgeEditorMode('raw')">Raw</button>
-            <button class="btn btn-outline-secondary"        id="btn-editor-visual" onclick="switchBridgeEditorMode('visual')">Vizuális</button>
-          </div>
-        </div>
-        <textarea id="bridge-config" class="form-control config-ta mb-2" placeholder="Betöltés…"></textarea>
-        <div id="bridge-config-visual" class="mb-2" style="display:none;"></div>
-        <button class="btn btn-sm btn-primary" onclick="saveBridgeConfig()">Save</button>
-        <span id="bridge-save-fb" class="save-fb"></span>
-      </div>
+      <button class="btn btn-sm btn-outline-secondary" onclick="openBridgeConfigPopup()">bridge.json szerkesztése</button>
     </div>
 
     <div class="card mb-3">
@@ -113,15 +129,57 @@
 
 </div>
 
+<!-- bridge.json popup szerkesztő -->
+<div id="bridge-config-popup">
+  <div id="bridge-popup-handle">
+    <span class="popup-title">bridge.json</span>
+    <div class="btn-group btn-group-sm" role="group">
+      <button class="btn btn-outline-light active" id="btn-editor-raw"    onclick="switchBridgeEditorMode('raw')">Raw</button>
+      <button class="btn btn-outline-light"        id="btn-editor-visual" onclick="switchBridgeEditorMode('visual')">Vizuális</button>
+    </div>
+    <button class="btn-close-popup" onclick="closeBridgeConfigPopup()">✕</button>
+  </div>
+  <div id="bridge-popup-body">
+    <textarea id="bridge-config" class="form-control mb-2" placeholder="Betöltés…"></textarea>
+    <div id="bridge-config-visual" class="mb-2" style="display:none;"></div>
+    <div id="bridge-popup-footer">
+      <button class="btn btn-sm btn-primary" onclick="saveBridgeConfig()">Save</button>
+      <span id="bridge-save-fb" class="save-fb"></span>
+    </div>
+  </div>
+</div>
+
 <script>
 let mode = 'bridge';
 let bridgeActive = false;
 let logTimer = null;
-let bridgeConfigOpen = false;
+let bridgeConfigLoaded = false;
 let bridgeEditorMode = 'raw';
 let jsonEditor = null;
 let jsonEditorLoading = false;
 let jsonEditorLoaded = false;
+
+// --- Popup drag ---
+let dragState = null;
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('bridge-popup-handle').addEventListener('mousedown', e => {
+    if (e.target.closest('button')) return;
+    const popup = document.getElementById('bridge-config-popup');
+    const rect = popup.getBoundingClientRect();
+    dragState = { startX: e.clientX, startY: e.clientY, left: rect.left, top: rect.top };
+    e.preventDefault();
+  });
+});
+
+document.addEventListener('mousemove', e => {
+  if (!dragState) return;
+  const popup = document.getElementById('bridge-config-popup');
+  popup.style.left = (dragState.left + e.clientX - dragState.startX) + 'px';
+  popup.style.top  = (dragState.top  + e.clientY - dragState.startY) + 'px';
+});
+
+document.addEventListener('mouseup', () => { dragState = null; });
 
 async function fetchStatus() {
   try {
@@ -149,7 +207,7 @@ function switchMode(newMode) {
   document.getElementById('tab-bridge').classList.toggle('active',    newMode === 'bridge');
   document.getElementById('tab-discovery').classList.toggle('active', newMode === 'discovery');
   if (newMode === 'discovery') loadDiscoveryConfig();
-  else if (bridgeConfigOpen) loadBridgeConfig();
+  else if (bridgeConfigLoaded) loadBridgeConfig();
 }
 
 async function bridgeAction(action) {
@@ -161,12 +219,18 @@ async function bridgeAction(action) {
   await fetchStatus();
 }
 
-function toggleBridgeConfig() {
-  bridgeConfigOpen = !bridgeConfigOpen;
-  document.getElementById('bridge-config-card').style.display = bridgeConfigOpen ? '' : 'none';
-  document.getElementById('bridge-config-btn-label').textContent =
-    bridgeConfigOpen ? 'bridge.json szerkesztése ▴' : 'bridge.json szerkesztése ▾';
-  if (bridgeConfigOpen) loadBridgeConfig();
+function openBridgeConfigPopup() {
+  const popup = document.getElementById('bridge-config-popup');
+  if (!popup.style.left) {
+    popup.style.left = Math.max(20, (window.innerWidth - 640) / 2) + 'px';
+    popup.style.top  = '80px';
+  }
+  popup.classList.add('open');
+  if (!bridgeConfigLoaded) { bridgeConfigLoaded = true; loadBridgeConfig(); }
+}
+
+function closeBridgeConfigPopup() {
+  document.getElementById('bridge-config-popup').classList.remove('open');
 }
 
 function loadJsonEditorLib() {
