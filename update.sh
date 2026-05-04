@@ -15,6 +15,7 @@ fi
 # --- web UI frissítése ---
 cp -r "$SRC_DIR/web" "$INSTALL_DIR/"
 chown -R myio:myio "$INSTALL_DIR/web"
+usermod -aG systemd-journal myio 2>/dev/null || true
 systemctl restart myio-web
 
 # --- bináris frissítése ---
