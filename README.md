@@ -242,10 +242,10 @@ Pre-built static binaries are available on the [Releases](../../releases) page. 
 export GITHUB_TOKEN=ghp_...
 
 # Clone the repo (token embedded in URL for private repo)
-git clone https://your-user:$GITHUB_TOKEN@github.com/pvaczi/myio_bridge /tmp/myio-src
+git clone https://your-user:$GITHUB_TOKEN@github.com/pvaczi/myio_bridge /opt/myio-src
 
 # Run the installer as root
-bash /tmp/myio-src/install.sh
+bash /opt/myio-src/install.sh
 ```
 
 `install.sh` does the following:
@@ -262,13 +262,17 @@ bash /tmp/myio-src/install.sh
 
 The script is idempotent — re-running it is safe and will not overwrite existing config files.
 
-### Updating the binary
+### Updating
 
 ```bash
-sudo bash /opt/myio-bridge/update.sh
+sudo bash /opt/myio-src/update.sh
 ```
 
-This fetches the latest GitHub release and restarts `myio-bridge`.
+This does everything in one step:
+
+1. `git pull` on `/opt/myio-src` (or clones it if missing)
+2. Copies the updated Web UI files to `/opt/myio-bridge/web/` and restarts `myio-web`
+3. Downloads the latest binary from GitHub Releases and restarts `myio-bridge`
 
 ### Logs
 
@@ -282,9 +286,9 @@ journalctl -u myio-web -f
 The bridge ships a lightweight web interface (`myio-web.service`, port 8080) for monitoring and control without a terminal.
 
 Features:
-- Start / stop the bridge
-- Run discovery and view its output
-- Edit `bridge.json` and `discovery_input.json` in the browser
+- **Bridge mode** (default): start/stop the bridge, edit `bridge.json`, view the live log
+- **Discovery mode**: run discovery (with confirmation — overwrites `bridge.json`), edit `discovery_input.json`; only available when the bridge is stopped
+- **Live log**: last 200 lines of the bridge's systemd journal, with manual refresh or auto-refresh every 3 seconds
 
 Access it at `http://<host-ip>:8080` after installation.
 
