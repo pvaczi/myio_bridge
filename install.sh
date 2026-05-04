@@ -31,6 +31,8 @@ if ! id "$SERVICE_USER" &>/dev/null; then
 else
     info "User már létezik: $SERVICE_USER"
 fi
+usermod -aG systemd-journal "$SERVICE_USER" 2>/dev/null || true
+ok "systemd-journal csoport: $SERVICE_USER"
 
 # --- directories ---
 mkdir -p "$INSTALL_DIR"/{bin,data}

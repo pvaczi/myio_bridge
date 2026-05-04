@@ -88,6 +88,16 @@ def config_discovery_set():
     return _save_config(DISCOVERY_JSON)
 
 
+@app.route("/api/bridge/log")
+def bridge_log():
+    result = subprocess.run(
+        ["journalctl", "-u", "myio-bridge", "-n", "200", "--no-pager"],
+        capture_output=True, text=True
+    )
+    lines = result.stdout or result.stderr or "(nincs log)"
+    return jsonify({"ok": True, "lines": lines})
+
+
 def _save_config(path):
     content = request.get_data(as_text=True)
     try:
