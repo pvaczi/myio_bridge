@@ -72,6 +72,8 @@ Copy `data/discovery_input.example.json` to `data/discovery_input.json` and fill
 
 This queries each server's `/d_sens_out.json` endpoint and writes a fully populated `bridge.json`. All outputs are initially set to `"enabled": false`.
 
+Re-running discovery on an existing `bridge.json` is safe: enabled flags and custom names are preserved for matching entries, phantom sensors (present in the JSON but absent from the hardware) are removed, and cover endpoint types are matched correctly.
+
 ### Step 3 — Edit bridge.json
 
 Open `bridge.json` and configure:
@@ -272,7 +274,7 @@ This does everything in one step:
 
 1. `git pull` on `/opt/myio-src` (or clones it if missing)
 2. Copies the updated Web UI files to `/opt/myio-bridge/web/` and restarts `myio-web`
-3. Downloads the latest binary from GitHub Releases and restarts `myio-bridge`
+3. Downloads the latest binary from GitHub Releases and restarts `myio-bridge` — only if the bridge was already running before the update
 
 ### Logs
 
@@ -289,6 +291,7 @@ Features:
 - **Bridge mode** (default): start/stop the bridge, edit `bridge.json`, view the live log
 - **Discovery mode**: run discovery (with confirmation — overwrites `bridge.json`), edit `discovery_input.json`; only available when the bridge is stopped
 - **Live log**: last 200 lines of the bridge's systemd journal, with manual refresh or auto-refresh every 3 seconds
+- **`bridge.json` editor**: opens in a resizable, draggable floating popup. Toggle between **Raw** (plain textarea) and **Visual** (JSONEditor tree view) modes via the button in the popup header. The popup can be moved by dragging the header and resized from any corner or edge.
 
 Access it at `http://<host-ip>:8080` after installation.
 
