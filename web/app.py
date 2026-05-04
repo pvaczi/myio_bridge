@@ -91,7 +91,7 @@ def config_discovery_set():
 @app.route("/api/bridge/log")
 def bridge_log():
     result = subprocess.run(
-        ["journalctl", "-u", "myio-bridge", "-n", "200", "--no-pager", "--output=short-iso-precise"],
+        ["journalctl", "-u", "myio-bridge", "-n", "200", "--no-pager", "--output=cat"],
         capture_output=True, text=True
     )
     lines = result.stdout or result.stderr or "(nincs log)"
