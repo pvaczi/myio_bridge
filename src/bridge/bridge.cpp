@@ -11,6 +11,7 @@
 #include <charconv>
 #include <chrono>
 #include <format>
+#include <limits>
 #include <ranges>
 #include <stdexcept>
 #include <string>
@@ -529,6 +530,13 @@ net::awaitable<void> ServerBridge::poll_loop() {
 
     myio::log("[{}] Poll loop started, interval={}s",
               cfg_.server_id, cfg_.poll_interval_sec);
+
+    // Sentinel init: force first poll to publish current state regardless of value.
+    // Without this, state=0 (OFF) would match the default-initialized last=0 → no publish.
+    for (const auto& [id, _] : pca_map)    last_pca_state_[id]   = -1;
+    for (const auto& [id, _] : relay_map)  last_relay_state_[id] = -1;
+    for (const auto& [id, _] : pwm_map)    last_pwm_state_[id]   = -1;
+    for (const auto& [id, _] : sensor_map) last_sensor_val_[id]  = std::numeric_limits<double>::max();
 
     while (true) {
         std::exception_ptr caught;
