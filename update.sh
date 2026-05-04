@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 REPO="pvaczi/myio_bridge"
-SRC_DIR="/tmp/myio-src"
+SRC_DIR="/opt/myio-src"
 INSTALL_DIR="/opt/myio-bridge"
 [ -f /etc/myio-bridge.env ] && source /etc/myio-bridge.env
 
