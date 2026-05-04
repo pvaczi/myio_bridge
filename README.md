@@ -226,30 +226,67 @@ All state topics are published with `retain = true`.
 
 Home Assistant auto-discovery messages are published to the standard `homeassistant/` prefix.
 
-## Running as a systemd service
+## Deploying to Linux (LXC / VM)
 
-Copy the binary and config to their standard locations:
+Pre-built static binaries are available on the [Releases](../../releases) page. The `install.sh` script automates the full first-time setup on a Debian/Ubuntu host.
 
-```bash
-sudo cp build/bridge /usr/local/bin/myio-bridge
-sudo mkdir -p /etc/myio-bridge
-sudo cp bridge.json /etc/myio-bridge/bridge.json
-```
+### Requirements
 
-Install the service:
+- Debian Trixie or Ubuntu 24.04+
+- A GitHub PAT (classic) with `repo` scope — needed to download release assets from a private repository
 
-```bash
-sudo cp myio-bridge.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now myio-bridge
-```
-
-Check status and logs:
+### First-time install
 
 ```bash
-sudo systemctl status myio-bridge
-sudo journalctl -u myio-bridge -f
+# Set the token
+export GITHUB_TOKEN=ghp_...
+
+# Clone the repo (token embedded in URL for private repo)
+git clone https://your-user:$GITHUB_TOKEN@github.com/pvaczi/myio_bridge /tmp/myio-src
+
+# Run the installer as root
+bash /tmp/myio-src/install.sh
 ```
+
+`install.sh` does the following:
+
+- Installs `curl` and `python3-venv`
+- Creates a `myio` system user
+- Creates `/opt/myio-bridge/{bin,data}`
+- Writes the token to `/etc/myio-bridge.env` (mode 600)
+- Copies the Web UI and sets up a Python venv with Flask
+- Copies `bridge.json` and `discovery_input.json` (only if not already present — existing configs are preserved)
+- Installs `myio-bridge.service` and `myio-web.service` under systemd
+- Configures sudoers so the Web UI can start/stop the bridge
+- Downloads the latest binary via `update.sh` and starts both services
+
+The script is idempotent — re-running it is safe and will not overwrite existing config files.
+
+### Updating the binary
+
+```bash
+sudo bash /opt/myio-bridge/update.sh
+```
+
+This fetches the latest GitHub release and restarts `myio-bridge`.
+
+### Logs
+
+```bash
+journalctl -u myio-bridge -f
+journalctl -u myio-web -f
+```
+
+## Web UI
+
+The bridge ships a lightweight web interface (`myio-web.service`, port 8080) for monitoring and control without a terminal.
+
+Features:
+- Start / stop the bridge
+- Run discovery and view its output
+- Edit `bridge.json` and `discovery_input.json` in the browser
+
+Access it at `http://<host-ip>:8080` after installation.
 
 ## myIO HTTP API
 
