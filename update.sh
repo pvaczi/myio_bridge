@@ -5,6 +5,9 @@ SRC_DIR="/opt/myio-src"
 INSTALL_DIR="/opt/myio-bridge"
 [ -f /etc/myio-bridge.env ] && source /etc/myio-bridge.env
 
+# --- bridge állapot mentése ---
+systemctl is-active --quiet myio-bridge && BRIDGE_WAS_RUNNING=1 || BRIDGE_WAS_RUNNING=0
+
 # --- forrás frissítése ---
 if [[ -d "$SRC_DIR/.git" ]]; then
     git -C "$SRC_DIR" pull
@@ -34,5 +37,9 @@ curl -fL -H "Authorization: Bearer $GITHUB_TOKEN" \
      "https://api.github.com/repos/$REPO/releases/assets/$ASSET_ID" \
      | tar -xz -C /opt/myio-bridge/bin/
 
-systemctl restart myio-bridge
+if [ "$BRIDGE_WAS_RUNNING" -eq 1 ]; then
+    systemctl restart myio-bridge
+else
+    echo "myio-bridge nem futott — frissítés után sem indítjuk el."
+fi
 echo "Frissítve: $(date)"
