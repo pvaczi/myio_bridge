@@ -1,7 +1,11 @@
 import json
 import os
+import re
 import subprocess
 from flask import Flask, jsonify, render_template, request
+
+_JOURNAL_LINE = re.compile(r'^(\S+)\s+\S+\s+\S+:\s+(.*)')
+_OWN_TS = re.compile(r'^\d{4}-\d{2}-\d{2}')
 
 app = Flask(__name__)
 
@@ -91,11 +95,19 @@ def config_discovery_set():
 @app.route("/api/bridge/log")
 def bridge_log():
     result = subprocess.run(
-        ["journalctl", "-u", "myio-bridge", "-n", "200", "--no-pager", "--output=cat"],
+        ["journalctl", "-u", "myio-bridge", "-n", "200", "--no-pager", "--output=short-iso-precise"],
         capture_output=True, text=True
     )
-    lines = result.stdout or result.stderr or "(nincs log)"
-    return jsonify({"ok": True, "lines": lines})
+    raw = result.stdout or result.stderr or "(nincs log)"
+    lines = []
+    for line in raw.splitlines():
+        m = _JOURNAL_LINE.match(line)
+        if m:
+            ts, msg = m.group(1), m.group(2)
+            lines.append(msg if _OWN_TS.match(msg) else f"{ts} {msg}")
+        else:
+            lines.append(line)
+    return jsonify({"ok": True, "lines": "\n".join(lines)})
 
 
 def _save_config(path):
