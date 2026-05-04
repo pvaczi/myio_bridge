@@ -46,7 +46,12 @@
       </div>
     </div>
 
-    <div class="card mb-3">
+    <div class="mb-3">
+      <button class="btn btn-sm btn-outline-secondary" onclick="toggleBridgeConfig()">
+        <span id="bridge-config-btn-label">bridge.json szerkesztése ▾</span>
+      </button>
+    </div>
+    <div id="bridge-config-card" class="card mb-3" style="display:none;">
       <div class="card-body">
         <h6 class="card-title">bridge.json</h6>
         <textarea id="bridge-config" class="form-control config-ta mb-2" placeholder="Betöltés…"></textarea>
@@ -129,7 +134,7 @@ function switchMode(newMode) {
   document.getElementById('tab-bridge').classList.toggle('active',    newMode === 'bridge');
   document.getElementById('tab-discovery').classList.toggle('active', newMode === 'discovery');
   if (newMode === 'discovery') loadDiscoveryConfig();
-  else loadBridgeConfig();
+  else if (bridgeConfigOpen) loadBridgeConfig();
 }
 
 async function bridgeAction(action) {
@@ -139,6 +144,16 @@ async function bridgeAction(action) {
   const d = await r.json();
   if (!d.ok) { errEl.textContent = d.error || 'Hiba'; errEl.style.display = ''; }
   await fetchStatus();
+}
+
+let bridgeConfigOpen = false;
+
+function toggleBridgeConfig() {
+  bridgeConfigOpen = !bridgeConfigOpen;
+  document.getElementById('bridge-config-card').style.display = bridgeConfigOpen ? '' : 'none';
+  document.getElementById('bridge-config-btn-label').textContent =
+    bridgeConfigOpen ? 'bridge.json szerkesztése ▴' : 'bridge.json szerkesztése ▾';
+  if (bridgeConfigOpen) loadBridgeConfig();
 }
 
 async function loadBridgeConfig() {
@@ -223,7 +238,6 @@ function setLogAuto(on) {
 }
 
 fetchStatus();
-loadBridgeConfig();
 setInterval(fetchStatus, 5000);
 </script>
 </body>
