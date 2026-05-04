@@ -379,16 +379,6 @@ static json::array make_cover_array(
         cover["_protection_index"] = c.protection_index;
         covers.push_back(std::move(cover));
     }
-    if (covers.empty()) {
-        covers.push_back(json::object{
-            {"_comment",  "No cover pairs auto-detected. Fill in manually."},
-            {"id",        "cover_example"},
-            {"name",      "Example shutter"},
-            {"enabled",   false},
-            {"up",   json::object{{"type", "pca"}, {"id", 0}}},
-            {"down", json::object{{"type", "pca"}, {"id", 0}}}
-        });
-    }
     return covers;
 }
 
@@ -488,19 +478,22 @@ static json::object make_server_entry(const InputServer& is,
     apply_enabled(pwm_arr, "pwm");
     if (!pwm_arr.empty()) srv["pwm"] = std::move(pwm_arr);
 
-    // Sensors – named only
+    // Sensors – named only, with at least one actual measurement value.
+    // Entries with all-nullopt fields are phantom/unused hardware slots.
     json::array sensor_arr;
     for (const auto& s : state.sensors) {
         if (s.name.empty()) continue;
+        if (!s.temperature && !s.humidity && !s.energy &&
+            !s.power && !s.voltage && !s.current) continue;
         sensor_arr.push_back(make_sensor_entry(s));
     }
     apply_enabled(sensor_arr, "sensors");
     if (!sensor_arr.empty()) srv["sensors"] = std::move(sensor_arr);
 
-    // Covers – always include (has placeholder comment if no candidates detected)
+    // Covers – omit section entirely if no candidates detected
     json::array cover_arr = make_cover_array(cover_cands, name_map, pca_timer_map);
     apply_enabled(cover_arr, "covers");
-    srv["covers"] = std::move(cover_arr);
+    if (!cover_arr.empty()) srv["covers"] = std::move(cover_arr);
 
     return srv;
 }
