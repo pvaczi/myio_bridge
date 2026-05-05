@@ -34,6 +34,7 @@ void log(std::FILE* stream, std::format_string<Args...> fmt, Args&&... args) {
             std::chrono::system_clock::now()));
     std::println(stream, "[{:%Y-%m-%d %H:%M:%S}] {}",
         now, std::format(fmt, std::forward<Args>(args)...));
+    std::fflush(stream);
 }
 
 template<typename... Args>
