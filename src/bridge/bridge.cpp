@@ -854,7 +854,9 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
             std::to_string(brightness), true);
         if (is_pca_light) last_pca_state_[id] = brightness;
         else              last_pwm_state_[id]  = brightness;
-        myio::log("[{}] [bridge to broker] Light brightness {} → {}", cfg_.server_id, id, brightness);
+        myio::log("[{}] [bridge to broker] Light brightness {} → {} ({}%)",
+                  cfg_.server_id, id, brightness,
+                  static_cast<int>(std::round(brightness / 255.0 * 100.0)));
         co_return;
     }
 
