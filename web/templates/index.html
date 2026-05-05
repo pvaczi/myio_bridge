@@ -18,7 +18,7 @@
 
     #bridge-config-popup {
       display: none; position: fixed; z-index: 1050;
-      width: 760px; height: 560px; min-width: 420px; min-height: 240px;
+      width: 900px; height: 560px; min-width: 420px; min-height: 240px;
       background: #fff; border: 1px solid #dee2e6;
       border-radius: 0.5rem; box-shadow: 0 8px 32px rgba(0,0,0,.2);
       resize: both; overflow: hidden; flex-direction: column;
@@ -260,7 +260,7 @@ async function bridgeAction(action) {
 function openBridgeConfigPopup() {
   const popup = document.getElementById('bridge-config-popup');
   if (!popup.style.left) {
-    popup.style.left = Math.max(20, (window.innerWidth - 760) / 2) + 'px';
+    popup.style.left = Math.max(20, (window.innerWidth - 900) / 2) + 'px';
     popup.style.top  = '80px';
   }
   popup.classList.add('open');
@@ -321,24 +321,80 @@ function renderSensorRow(item) {
 </div>`;
 }
 
-function renderCoverRow(item) {
+function coverIdSelectHtml(name, devices, currentId) {
+  const cur = parseInt(currentId) || 0;
+  const ids = new Set(devices.map(d => d.id));
+  let opts = '';
+  if (cur > 0 && !ids.has(cur)) opts += `<option value="${cur}" selected>${cur} — ?</option>`;
+  devices.forEach(d => {
+    opts += `<option value="${esc(d.id)}"${d.id == cur ? ' selected' : ''}>${esc(d.id)} — ${esc(d.name ?? '')}</option>`;
+  });
+  if (!opts) opts = `<option value="0">—</option>`;
+  return `<select name="${name}" style="min-width:130px">${opts}</select>`;
+}
+
+function veCoverTypeChanged(typeSelect, dir) {
+  const row     = typeSelect.closest('.ve-row');
+  const type    = typeSelect.value;
+  const devices = JSON.parse(type === 'relay' ? (row.dataset.relayOpts || '[]') : (row.dataset.pcaOpts || '[]'));
+  const idSel   = row.querySelector(`[name=cov-${dir}-id]`);
+  const cur     = parseInt(idSel.value) || 0;
+  const ids     = new Set(devices.map(d => d.id));
+  let opts = '';
+  if (cur > 0 && !ids.has(cur)) opts += `<option value="${cur}" selected>${cur} — ?</option>`;
+  devices.forEach(d => { opts += `<option value="${d.id}"${d.id == cur ? ' selected' : ''}>${d.id} — ${d.name ?? ''}</option>`; });
+  idSel.innerHTML = opts || `<option value="0">—</option>`;
+}
+
+function getSrvDevicesFromDom(srvEl) {
+  const pca = [], relays = [];
+  srvEl.querySelectorAll('.ve-row[data-kind="pca"]').forEach(row => {
+    const id = parseInt(row.querySelector('[name=dev-id]')?.value);
+    const name = row.querySelector('[name=dev-name]')?.value ?? '';
+    if (id > 0) pca.push({id, name});
+  });
+  srvEl.querySelectorAll('.ve-row[data-kind="relays"]').forEach(row => {
+    const id = parseInt(row.querySelector('[name=dev-id]')?.value);
+    const name = row.querySelector('[name=dev-name]')?.value ?? '';
+    if (id > 0) relays.push({id, name});
+  });
+  return {pca, relays};
+}
+
+function renderCoverRow(srv, item) {
   const id = item.id ?? '', name = item.name ?? '', en = item.enabled === true;
   const timeout = item.motor_timeout_sec ?? 90;
   const up = item.up ?? {}, dn = item.down ?? {};
-  // Pass-through _ fields for the cover itself and for each endpoint
-  const extra    = {};
-  for (const k of Object.keys(item)) if (k.startsWith('_')) extra[k] = item[k];
-  const upExtra  = {};
-  for (const k of Object.keys(up)) if (k.startsWith('_')) upExtra[k] = up[k];
-  const dnExtra  = {};
-  for (const k of Object.keys(dn)) if (k.startsWith('_')) dnExtra[k] = dn[k];
-  return `<div class="ve-row" data-kind="covers" data-extra="${esc(JSON.stringify(extra))}" data-extra-up="${esc(JSON.stringify(upExtra))}" data-extra-dn="${esc(JSON.stringify(dnExtra))}">
+  const extra   = {}, upExtra = {}, dnExtra = {};
+  for (const k of Object.keys(item)) if (k.startsWith('_')) extra[k]   = item[k];
+  for (const k of Object.keys(up))   if (k.startsWith('_')) upExtra[k] = up[k];
+  for (const k of Object.keys(dn))   if (k.startsWith('_')) dnExtra[k] = dn[k];
+
+  const pcaDevices   = (srv.pca    ?? []).filter(d => d.id > 0);
+  const relayDevices = (srv.relays ?? []).filter(d => d.id > 0);
+  const pcaOptsJson   = esc(JSON.stringify(pcaDevices.map(d => ({id: d.id, name: d.name ?? ''}))));
+  const relayOptsJson = esc(JSON.stringify(relayDevices.map(d => ({id: d.id, name: d.name ?? ''}))));
+
+  const upType  = up.type || 'pca';
+  const dnType  = dn.type || 'pca';
+  const upDevs  = upType === 'relay' ? relayDevices : pcaDevices;
+  const dnDevs  = dnType === 'relay' ? relayDevices : pcaDevices;
+
+  return `<div class="ve-row" data-kind="covers" data-extra="${esc(JSON.stringify(extra))}" data-extra-up="${esc(JSON.stringify(upExtra))}" data-extra-dn="${esc(JSON.stringify(dnExtra))}" data-pca-opts="${pcaOptsJson}" data-relay-opts="${relayOptsJson}">
   <input type="text" name="cov-id" value="${esc(id)}" placeholder="ID" style="width:90px">
   <input type="text" class="ve-name" name="dev-name" value="${esc(name)}" placeholder="Név">
-  <span class="ve-sep">↑</span>${endTypeHtml('cov-up-type', up.type)}
-  <input type="number" name="cov-up-id" value="${esc(up.id??0)}" min="0" style="width:46px">
-  <span class="ve-sep">↓</span>${endTypeHtml('cov-down-type', dn.type)}
-  <input type="number" name="cov-down-id" value="${esc(dn.id??0)}" min="0" style="width:46px">
+  <span class="ve-sep">↑</span>
+  <select name="cov-up-type" style="width:72px" onchange="veCoverTypeChanged(this,'up')">
+    <option value="pca"${upType==='pca'?' selected':''}>pca</option>
+    <option value="relay"${upType==='relay'?' selected':''}>relay</option>
+  </select>
+  ${coverIdSelectHtml('cov-up-id', upDevs, up.id)}
+  <span class="ve-sep">↓</span>
+  <select name="cov-down-type" style="width:72px" onchange="veCoverTypeChanged(this,'down')">
+    <option value="pca"${dnType==='pca'?' selected':''}>pca</option>
+    <option value="relay"${dnType==='relay'?' selected':''}>relay</option>
+  </select>
+  ${coverIdSelectHtml('cov-down-id', dnDevs, dn.id)}
   <input type="number" name="cov-timeout" value="${timeout}" min="0" style="width:50px" title="Motor timeout">
   <span class="ve-sep" style="font-size:.72rem">s</span>
   <input type="checkbox" class="form-check-input" name="dev-enabled"${en?' checked':''} title="Engedélyezett">
@@ -381,7 +437,7 @@ function renderServerSection(srv) {
     ${renderSubsection('relays', 'Relék',         srv.relays  ?? [], renderOutputRow.bind(null,'relays'))}
     ${renderSubsection('pwm',    'PWM',           srv.pwm     ?? [], renderOutputRow.bind(null,'pwm'))}
     ${renderSubsection('sensors','Érzékelők',     srv.sensors ?? [], renderSensorRow)}
-    ${renderSubsection('covers', 'Redőnyök',       srv.covers  ?? [], renderCoverRow)}
+    ${renderSubsection('covers', 'Redőnyök',       srv.covers  ?? [], renderCoverRow.bind(null, srv))}
   </div>
 </div>`;
 }
@@ -549,7 +605,7 @@ function veAddDevice(btn, kind) {
   const div = document.createElement('div');
   let html;
   if      (kind === 'sensors') html = renderSensorRow({});
-  else if (kind === 'covers')  html = renderCoverRow({});
+  else if (kind === 'covers')  html = renderCoverRow(getSrvDevicesFromDom(btn.closest('.ve-server')), {});
   else                         html = renderOutputRow(kind, {});
   div.innerHTML = html.trim();
   body.appendChild(div.firstElementChild);
