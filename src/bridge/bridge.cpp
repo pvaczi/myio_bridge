@@ -577,7 +577,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 if (last != pca.state) {
                     last = pca.state;
                     co_await publish_pca_state(pca, *it->second);
-                    myio::log("[{}] PCA {} → {}", cfg_.server_id, pca.id, pca.state);
+                    myio::log("[{}] [myIO to broker] PCA {} → {}", cfg_.server_id, pca.id, pca.state);
                 }
             }
 
@@ -614,7 +614,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 if (last != static_cast<int>(relay.state)) {
                     last = relay.state ? 1 : 0;
                     co_await publish_relay_state(relay, *it->second);
-                    myio::log("[{}] Relay {} → {}",
+                    myio::log("[{}] [myIO to broker] Relay {} → {}",
                               cfg_.server_id, relay.id, relay.state ? "ON" : "OFF");
                 }
             }
@@ -626,7 +626,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 if (last != pwm.state) {
                     last = pwm.state;
                     co_await publish_pwm_state(pwm, *it->second);
-                    myio::log("[{}] PWM {} → {}", cfg_.server_id, pwm.id, pwm.state);
+                    myio::log("[{}] [myIO to broker] PWM {} → {}", cfg_.server_id, pwm.id, pwm.state);
                 }
             }
 
@@ -702,7 +702,7 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
             else if (cmd == "CLOSE") post = ep_off(c.up)   + "&" + ep_on(c.down);
             else if (cmd == "STOP")  post = ep_off(c.up)   + "&" + ep_off(c.down);
             else co_return;
-            myio::log("[{}] Cover {} → {}", cfg_.server_id, c.cover_id, post);
+            myio::log("[{}] [broker to myIO] Cover {} → {}", cfg_.server_id, c.cover_id, post);
             co_await client_->async_send_command(post);
 
             // Optimistic state publish + direction tracking.
@@ -715,17 +715,20 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
                 else                             last_pca_state_[key]   = 1;
                 co_await publisher_->async_publish(
                     cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), "opening", true);
+                myio::log("[{}] [bridge to broker] Cover {} → opening", cfg_.server_id, c.cover_id);
             } else if (cmd == "CLOSE") {
                 last_cover_dir_[key] = -1;
                 if (c.up.output_type == "relay") last_relay_state_[key] = 1;
                 else                             last_pca_state_[key]   = 1;
                 co_await publisher_->async_publish(
                     cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), "closing", true);
+                myio::log("[{}] [bridge to broker] Cover {} → closing", cfg_.server_id, c.cover_id);
             } else if (cmd == "STOP") {
                 co_await publisher_->async_publish(
                     cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), "stopped", true);
                 co_await publisher_->async_publish(
                     cover_position_topic(topic_prefix_, cfg_.server_id, c.cover_id), "50", true);
+                myio::log("[{}] [bridge to broker] Cover {} → stopped", cfg_.server_id, c.cover_id);
                 if (last_cover_cancel_.count(key))
                     *last_cover_cancel_[key] = true;
             }
@@ -754,6 +757,7 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
                                     cover_state_topic(prefix, sid, cov_id), "stopped", true);
                                 co_await pub->async_publish(
                                     cover_position_topic(prefix, sid, cov_id), std::to_string(end_pos), true);
+                                myio::log("[{}] [bridge to broker] Cover {} → stopped (motor timeout)", sid, cov_id);
                             } catch (const std::exception& ex) {
                                 myio::log(stderr, "[{}] Cover {} motor timer error: {}",
                                           sid, cov_id, myio::short_what(ex));
@@ -789,7 +793,7 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
         const std::string post = is_pca
             ? std::format("PCA*{}={}", id,       value)
             : std::format("fet*{}={}", id - 100, value);
-        myio::log("[{}] Number {} → {}", cfg_.server_id, id, post);
+        myio::log("[{}] [broker to myIO] Number {} → {}", cfg_.server_id, id, post);
         co_await client_->async_send_command(post);
         co_return;
     }
@@ -812,8 +816,19 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
         const std::string post = is_pca_light
             ? std::format("PCA*{}={}", id, brightness)
             : std::format("fet*{}={}", id - 100, brightness);
-        myio::log("[{}] Light brightness {} → {}", cfg_.server_id, id, post);
+        myio::log("[{}] [broker to myIO] Light brightness {} → {}", cfg_.server_id, id, post);
         co_await client_->async_send_command(post);
+
+        // Optimistic state publish — like ON/OFF, don't wait for next poll
+        const std::string on_off = (brightness > 0) ? "ON" : "OFF";
+        co_await publisher_->async_publish(
+            light_state_topic(topic_prefix_, cfg_.server_id, id), on_off, true);
+        co_await publisher_->async_publish(
+            light_bright_topic(topic_prefix_, cfg_.server_id, id),
+            std::to_string(brightness), true);
+        if (is_pca_light) last_pca_state_[id] = brightness;
+        else              last_pwm_state_[id]  = brightness;
+        myio::log("[{}] [bridge to broker] Light brightness {} → {}", cfg_.server_id, id, brightness);
         co_return;
     }
 
@@ -842,7 +857,7 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
             co_return;
         }
 
-        myio::log("[{}] {} {} → {}", cfg_.server_id, entity_type, id, post);
+        myio::log("[{}] [broker to myIO] {} {} → {}", cfg_.server_id, entity_type, id, post);
         co_await client_->async_send_command(post);
 
         // Publish optimistic state immediately so HA doesn't revert to the
@@ -855,13 +870,16 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
                     ? light_state_topic(topic_prefix_, cfg_.server_id, id)
                     : switch_state_topic(topic_prefix_, cfg_.server_id, id);
                 co_await publisher_->async_publish(stopic, cmd, true);
+                myio::log("[{}] [bridge to broker] {} {} → {}", cfg_.server_id, entity_type, id, cmd);
             }
         } else if (is_relay) {
             co_await publisher_->async_publish(
                 switch_state_topic(topic_prefix_, cfg_.server_id, id), cmd, true);
+            myio::log("[{}] [bridge to broker] {} {} → {}", cfg_.server_id, entity_type, id, cmd);
         } else if (is_pwm) {
             co_await publisher_->async_publish(
                 light_state_topic(topic_prefix_, cfg_.server_id, id), cmd, true);
+            myio::log("[{}] [bridge to broker] {} {} → {}", cfg_.server_id, entity_type, id, cmd);
         }
     }
 }
