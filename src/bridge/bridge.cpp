@@ -417,6 +417,7 @@ net::awaitable<void> ServerBridge::publish_pca_state(const myio::PcaOutput& pca,
         co_await publisher_->async_publish(
             number_state_topic(topic_prefix_, cfg_.server_id, pca.id),
             std::to_string(pct), true);
+        myio::log("[{}] [myIO to broker] PCA {} → {}%", cfg_.server_id, pca.id, pct);
         co_return;
     }
 
@@ -424,21 +425,29 @@ net::awaitable<void> ServerBridge::publish_pca_state(const myio::PcaOutput& pca,
     if (cfg.type == config::OutputType::Light) {
         co_await publisher_->async_publish(
             light_state_topic(topic_prefix_, cfg_.server_id, pca.id), on_off, true);
-        if (pca.is_pwm)
+        if (pca.is_pwm) {
+            const int pct = static_cast<int>(std::round(pca.state / 255.0 * 100.0));
             co_await publisher_->async_publish(
                 light_bright_topic(topic_prefix_, cfg_.server_id, pca.id),
                 std::to_string(pca.state), true);
+            myio::log("[{}] [myIO to broker] PCA {} → {} brightness={} ({}%)",
+                      cfg_.server_id, pca.id, on_off, pca.state, pct);
+        } else {
+            myio::log("[{}] [myIO to broker] PCA {} → {}", cfg_.server_id, pca.id, on_off);
+        }
     } else {
         co_await publisher_->async_publish(
             switch_state_topic(topic_prefix_, cfg_.server_id, pca.id), on_off, true);
+        myio::log("[{}] [myIO to broker] PCA {} → {}", cfg_.server_id, pca.id, on_off);
     }
 }
 
 net::awaitable<void> ServerBridge::publish_relay_state(const myio::RelayOutput& relay,
                                                          const config::RelayConfig& /*cfg*/) {
+    const char* on_off = relay.state ? "ON" : "OFF";
     co_await publisher_->async_publish(
-        switch_state_topic(topic_prefix_, cfg_.server_id, relay.id),
-        relay.state ? "ON" : "OFF", true);
+        switch_state_topic(topic_prefix_, cfg_.server_id, relay.id), on_off, true);
+    myio::log("[{}] [myIO to broker] Relay {} → {}", cfg_.server_id, relay.id, on_off);
 }
 
 net::awaitable<void> ServerBridge::publish_cover_state(const config::CoverConfig& cover,
@@ -467,15 +476,19 @@ net::awaitable<void> ServerBridge::publish_pwm_state(const myio::PwmOutput& pwm,
         co_await publisher_->async_publish(
             number_state_topic(topic_prefix_, cfg_.server_id, pwm.id),
             std::to_string(pct), true);
+        myio::log("[{}] [myIO to broker] PWM {} → {}%", cfg_.server_id, pwm.id, pct);
         co_return;
     }
 
     const std::string on_off = (pwm.state > pwm.turn_off) ? "ON" : "OFF";
+    const int pct = static_cast<int>(std::round(pwm.state / 255.0 * 100.0));
     co_await publisher_->async_publish(
         light_state_topic(topic_prefix_, cfg_.server_id, pwm.id), on_off, true);
     co_await publisher_->async_publish(
         light_bright_topic(topic_prefix_, cfg_.server_id, pwm.id),
         std::to_string(pwm.state), true);
+    myio::log("[{}] [myIO to broker] PWM {} → {} brightness={} ({}%)",
+              cfg_.server_id, pwm.id, on_off, pwm.state, pct);
 }
 
 net::awaitable<void> ServerBridge::publish_sensor_state(const myio::Sensor& sensor,
@@ -577,7 +590,6 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 if (last != pca.state) {
                     last = pca.state;
                     co_await publish_pca_state(pca, *it->second);
-                    myio::log("[{}] [myIO to broker] PCA {} → {}", cfg_.server_id, pca.id, pca.state);
                 }
             }
 
@@ -614,8 +626,6 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 if (last != static_cast<int>(relay.state)) {
                     last = relay.state ? 1 : 0;
                     co_await publish_relay_state(relay, *it->second);
-                    myio::log("[{}] [myIO to broker] Relay {} → {}",
-                              cfg_.server_id, relay.id, relay.state ? "ON" : "OFF");
                 }
             }
 
@@ -626,7 +636,6 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 if (last != pwm.state) {
                     last = pwm.state;
                     co_await publish_pwm_state(pwm, *it->second);
-                    myio::log("[{}] [myIO to broker] PWM {} → {}", cfg_.server_id, pwm.id, pwm.state);
                 }
             }
 
