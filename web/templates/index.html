@@ -15,12 +15,10 @@
     .log-ta     { height: 300px; font-family: monospace; font-size: 0.78rem; resize: vertical; }
     .disc-log   { height: 160px; font-family: monospace; font-size: 0.82rem; resize: vertical; }
     .save-fb    { font-size: 0.88rem; margin-left: 0.75rem; }
-    .jsoneditor { border: 1px solid #dee2e6 !important; border-radius: 0.375rem !important; }
-    .jsoneditor-menu { background-color: #6c757d !important; border-bottom: 1px solid #5c636a !important; border-radius: 0.375rem 0.375rem 0 0 !important; }
 
     #bridge-config-popup {
       display: none; position: fixed; z-index: 1050;
-      width: 640px; height: 500px; min-width: 360px; min-height: 220px;
+      width: 760px; height: 560px; min-width: 420px; min-height: 240px;
       background: #fff; border: 1px solid #dee2e6;
       border-radius: 0.5rem; box-shadow: 0 8px 32px rgba(0,0,0,.2);
       resize: both; overflow: hidden; flex-direction: column;
@@ -41,23 +39,64 @@
       flex: 1; min-height: 0; display: flex; flex-direction: column;
       padding: .75rem; overflow: hidden;
     }
-    #bridge-config {
-      flex: 1; min-height: 60px; resize: none;
-      font-family: monospace; font-size: 0.82rem;
-    }
-    #bridge-config-visual { flex: 1; min-height: 60px; border-radius: 0.375rem; overflow: hidden; }
+    #bridge-config { flex: 1; min-height: 60px; resize: none; font-family: monospace; font-size: 0.82rem; }
+    #ve-filter-row { flex-shrink: 0; margin-bottom: .45rem; }
+    #bridge-config-visual { flex: 1; min-height: 60px; overflow-y: auto; }
     #bridge-popup-footer {
       display: flex; align-items: center;
       padding-top: .5rem; margin-top: .5rem;
       border-top: 1px solid #dee2e6; flex-shrink: 0;
     }
+
+    /* ===== Visual editor ===== */
+    .ve-section { border: 1px solid #dee2e6; border-radius: .375rem; margin-bottom: .4rem; }
+    .ve-section-hd {
+      background: #f8f9fa; padding: .3rem .65rem; cursor: pointer;
+      display: flex; align-items: center; gap: .4rem;
+      user-select: none; font-size: .85rem;
+    }
+    .ve-section-hd:hover { background: #e9ecef; }
+    .ve-section-body  { padding: .4rem .65rem; }
+    .ve-server > .ve-section-hd { background: #6c757d; color: #fff; border-radius: .375rem .375rem 0 0; }
+    .ve-server > .ve-section-hd:hover { background: #5c636a; }
+    .ve-subsection { margin-top: .35rem; }
+    .ve-row {
+      display: flex; align-items: center; gap: .3rem;
+      padding: .12rem 0; border-bottom: 1px solid #f0f0f0;
+    }
+    .ve-row:last-child { border-bottom: none; }
+    .ve-row input[type=text], .ve-row input[type=number], .ve-row select {
+      font-size: .8rem; padding: .1rem .35rem; height: auto;
+      border: 1px solid #ced4da; border-radius: .25rem; background: #fff;
+    }
+    .ve-id-badge { font-size: .75rem; color: #6c757d; flex-shrink: 0; }
+    .ve-name { flex: 1; min-width: 80px; }
+    .ve-del {
+      color: #dc3545; background: none; border: none;
+      font-size: .9rem; line-height: 1; cursor: pointer; flex-shrink: 0; padding: 0 .15rem;
+    }
+    .ve-del:hover { color: #a71d2a; }
+    .ve-count { font-size: .7rem; padding: .05rem .3rem; }
+    .ve-hidden { display: none !important; }
+    .ve-arrow { font-size: .7rem; flex-shrink: 0; }
+    .ve-sep { font-size: .8rem; color: #6c757d; flex-shrink: 0; }
+    .ve-add-btn { font-size: .75rem; padding: .1rem .4rem; line-height: 1.4; }
+    .ve-srv-fields {
+      display: flex; flex-wrap: wrap; gap: .3rem .5rem;
+      margin-bottom: .35rem; padding-bottom: .35rem; border-bottom: 1px solid #eee;
+    }
+    .ve-field { display: flex; flex-direction: column; gap: .05rem; }
+    .ve-field label { font-size: .68rem; color: #6c757d; margin: 0; line-height: 1.2; }
+    .ve-field input { font-size: .8rem; padding: .1rem .35rem; height: auto; border: 1px solid #ced4da; border-radius: .25rem; }
+    .ve-empty { font-size: .78rem; color: #adb5bd; padding: .15rem 0; }
+    #ve-add-server-row { margin-top: .35rem; }
+    #ve-filter { font-size: .82rem; }
   </style>
 </head>
 <body>
 <div class="container-fluid" style="max-width: 860px;">
   <h4 class="mb-3">myIO Bridge Control</h4>
 
-  <!-- Mode tabs -->
   <ul class="nav nav-tabs mb-3">
     <li class="nav-item">
       <button class="nav-link active" id="tab-bridge" onclick="switchMode('bridge')">Bridge</button>
@@ -141,7 +180,11 @@
   </div>
   <div id="bridge-popup-body">
     <textarea id="bridge-config" class="form-control mb-2" placeholder="Betöltés…"></textarea>
-    <div id="bridge-config-visual" class="mb-2" style="display:none;"></div>
+    <div id="ve-filter-row" style="display:none;">
+      <input id="ve-filter" class="form-control form-control-sm" type="search"
+             placeholder="Szűrő (eszköznév / ID)…" oninput="veFilter(this.value)">
+    </div>
+    <div id="bridge-config-visual" style="display:none;"></div>
     <div id="bridge-popup-footer">
       <button class="btn btn-sm btn-primary" onclick="saveBridgeConfig()">Save</button>
       <span id="bridge-save-fb" class="save-fb"></span>
@@ -155,9 +198,6 @@ let bridgeActive = false;
 let logTimer = null;
 let bridgeConfigLoaded = false;
 let bridgeEditorMode = 'raw';
-let jsonEditor = null;
-let jsonEditorLoading = false;
-let jsonEditorLoaded = false;
 
 // --- Popup drag ---
 let dragState = null;
@@ -171,14 +211,12 @@ document.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
   });
 });
-
 document.addEventListener('mousemove', e => {
   if (!dragState) return;
   const popup = document.getElementById('bridge-config-popup');
   popup.style.left = (dragState.left + e.clientX - dragState.startX) + 'px';
   popup.style.top  = (dragState.top  + e.clientY - dragState.startY) + 'px';
 });
-
 document.addEventListener('mouseup', () => { dragState = null; });
 
 async function fetchStatus() {
@@ -222,7 +260,7 @@ async function bridgeAction(action) {
 function openBridgeConfigPopup() {
   const popup = document.getElementById('bridge-config-popup');
   if (!popup.style.left) {
-    popup.style.left = Math.max(20, (window.innerWidth - 640) / 2) + 'px';
+    popup.style.left = Math.max(20, (window.innerWidth - 760) / 2) + 'px';
     popup.style.top  = '80px';
   }
   popup.classList.add('open');
@@ -233,71 +271,352 @@ function closeBridgeConfigPopup() {
   document.getElementById('bridge-config-popup').classList.remove('open');
 }
 
-function loadJsonEditorLib() {
-  if (jsonEditorLoaded) return Promise.resolve();
-  if (jsonEditorLoading) return new Promise(resolve => {
-    const check = setInterval(() => { if (jsonEditorLoaded) { clearInterval(check); resolve(); } }, 50);
+// ===== Visual editor — render =====
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function typeSelectHtml(selected) {
+  const types = ['switch','light','number','sensor_output','cover_up','cover_down'];
+  return `<select name="dev-type" style="width:110px">${
+    types.map(t => `<option value="${t}"${t===(selected||'switch')?' selected':''}>${t}</option>`).join('')
+  }</select>`;
+}
+
+function endTypeHtml(name, selected) {
+  return `<select name="${name}" style="width:58px">
+    <option value="pca"${(selected||'pca')==='pca'?' selected':''}>pca</option>
+    <option value="relay"${selected==='relay'?' selected':''}>relay</option>
+  </select>`;
+}
+
+function renderOutputRow(kind, item) {
+  const id = item.id ?? '', name = item.name ?? '', type = item.type ?? 'switch';
+  const en = item.enabled === true;
+  const sensorId = item._sensor_id ?? 0;
+  // Pass-through: all _ fields except _sensor_id (which has an explicit input)
+  const extra = {};
+  for (const k of Object.keys(item)) if (k.startsWith('_') && k !== '_sensor_id') extra[k] = item[k];
+  return `<div class="ve-row" data-kind="${kind}" data-extra="${esc(JSON.stringify(extra))}">
+  <span class="ve-id-badge">#</span>
+  <input type="number" name="dev-id" value="${esc(id)}" min="1" style="width:50px" placeholder="ID">
+  <input type="text" class="ve-name" name="dev-name" value="${esc(name)}" placeholder="Név">
+  ${typeSelectHtml(type)}
+  <span class="ve-id-badge" title="Szenzor ID (0=nincs)">S:</span>
+  <input type="number" name="dev-sensor-id" value="${esc(sensorId)}" min="0" style="width:42px" title="Szenzor ID (0=nincs)">
+  <input type="checkbox" class="form-check-input" name="dev-enabled"${en?' checked':''} title="Engedélyezett">
+  <button class="ve-del" onclick="veDeleteRow(this)" title="Törlés">✕</button>
+</div>`;
+}
+
+function renderSensorRow(item) {
+  const id = item.id ?? '', name = item.name ?? '', en = item.enabled === true;
+  return `<div class="ve-row" data-kind="sensors">
+  <span class="ve-id-badge">#</span>
+  <input type="number" name="dev-id" value="${esc(id)}" min="1" style="width:50px" placeholder="ID">
+  <input type="text" class="ve-name" name="dev-name" value="${esc(name)}" placeholder="Név">
+  <input type="checkbox" class="form-check-input" name="dev-enabled"${en?' checked':''} title="Engedélyezett">
+  <button class="ve-del" onclick="veDeleteRow(this)" title="Törlés">✕</button>
+</div>`;
+}
+
+function renderCoverRow(item) {
+  const id = item.id ?? '', name = item.name ?? '', en = item.enabled === true;
+  const timeout = item.motor_timeout_sec ?? 90;
+  const up = item.up ?? {}, dn = item.down ?? {};
+  // Pass-through _ fields for the cover itself and for each endpoint
+  const extra    = {};
+  for (const k of Object.keys(item)) if (k.startsWith('_')) extra[k] = item[k];
+  const upExtra  = {};
+  for (const k of Object.keys(up)) if (k.startsWith('_')) upExtra[k] = up[k];
+  const dnExtra  = {};
+  for (const k of Object.keys(dn)) if (k.startsWith('_')) dnExtra[k] = dn[k];
+  return `<div class="ve-row" data-kind="covers" data-extra="${esc(JSON.stringify(extra))}" data-extra-up="${esc(JSON.stringify(upExtra))}" data-extra-dn="${esc(JSON.stringify(dnExtra))}">
+  <input type="text" name="cov-id" value="${esc(id)}" placeholder="ID" style="width:90px">
+  <input type="text" class="ve-name" name="dev-name" value="${esc(name)}" placeholder="Név">
+  <span class="ve-sep">↑</span>${endTypeHtml('cov-up-type', up.type)}
+  <input type="number" name="cov-up-id" value="${esc(up.id??0)}" min="0" style="width:46px">
+  <span class="ve-sep">↓</span>${endTypeHtml('cov-down-type', dn.type)}
+  <input type="number" name="cov-down-id" value="${esc(dn.id??0)}" min="0" style="width:46px">
+  <input type="number" name="cov-timeout" value="${timeout}" min="0" style="width:50px" title="Motor timeout">
+  <span class="ve-sep" style="font-size:.72rem">s</span>
+  <input type="checkbox" class="form-check-input" name="dev-enabled"${en?' checked':''} title="Engedélyezett">
+  <button class="ve-del" onclick="veDeleteRow(this)" title="Törlés">✕</button>
+</div>`;
+}
+
+function renderSubsection(kind, label, items, renderFn) {
+  const rows = items.map(renderFn).join('');
+  return `<div class="ve-section ve-subsection" data-kind="${kind}">
+  <div class="ve-section-hd" onclick="veToggleSection(this)">
+    <span class="ve-arrow">▼</span>
+    <span class="flex-grow-1">${label}&nbsp;<span class="badge bg-secondary ve-count">${items.length}</span></span>
+    <button class="btn btn-outline-secondary ve-add-btn" onclick="veAddDevice(this,'${kind}');event.stopPropagation()">+ Hozzáad</button>
+  </div>
+  <div class="ve-section-body">${rows || '<div class="ve-empty">Nincs bejegyzés</div>'}</div>
+</div>`;
+}
+
+function renderServerSection(srv) {
+  const id = srv.id ?? '', host = srv.host ?? '';
+  const port = srv.port ?? 80, user = srv.user ?? 'admin';
+  const pass = srv.password ?? 'admin', interval = srv.poll_interval_sec ?? 2;
+  return `<div class="ve-section ve-server">
+  <div class="ve-section-hd" onclick="veToggleSection(this)">
+    <span class="ve-arrow">▼</span>
+    <strong class="flex-grow-1 ve-srv-title">Szerver: ${esc(id)}&nbsp;<span class="fw-normal opacity-75 ve-srv-host">(${esc(host)})</span></strong>
+    <button class="btn btn-outline-light ve-add-btn" onclick="veDeleteServer(this);event.stopPropagation()">✕</button>
+  </div>
+  <div class="ve-section-body">
+    <div class="ve-srv-fields">
+      <div class="ve-field"><label>ID</label><input type="text" name="srv-id" value="${esc(id)}" style="width:110px" oninput="veUpdateSrvHeader(this)"></div>
+      <div class="ve-field"><label>Host</label><input type="text" name="srv-host" value="${esc(host)}" style="width:140px" oninput="veUpdateSrvHeader(this)"></div>
+      <div class="ve-field"><label>Port</label><input type="number" name="srv-port" value="${port}" min="1" max="65535" style="width:65px"></div>
+      <div class="ve-field"><label>User</label><input type="text" name="srv-user" value="${esc(user)}" style="width:90px"></div>
+      <div class="ve-field"><label>Jelszó</label><input type="password" name="srv-password" value="${esc(pass)}" style="width:90px"></div>
+      <div class="ve-field"><label>Int. (s)</label><input type="number" name="srv-interval" value="${interval}" min="1" style="width:60px"></div>
+    </div>
+    ${renderSubsection('pca',    'PCA kimenetek', srv.pca     ?? [], renderOutputRow.bind(null,'pca'))}
+    ${renderSubsection('relays', 'Relék',         srv.relays  ?? [], renderOutputRow.bind(null,'relays'))}
+    ${renderSubsection('pwm',    'PWM',           srv.pwm     ?? [], renderOutputRow.bind(null,'pwm'))}
+    ${renderSubsection('sensors','Érzékelők',     srv.sensors ?? [], renderSensorRow)}
+    ${renderSubsection('covers', 'Redők',         srv.covers  ?? [], renderCoverRow)}
+  </div>
+</div>`;
+}
+
+function renderMqttSection(mqtt) {
+  const h=mqtt.host??'localhost', p=mqtt.port??1883, c=mqtt.client_id??'myio_bridge';
+  const u=mqtt.user??'', pw=mqtt.password??'', pf=mqtt.topic_prefix??'myio';
+  return `<div class="ve-section" id="ve-mqtt">
+  <div class="ve-section-hd" onclick="veToggleSection(this)">
+    <span class="ve-arrow">▼</span><strong>MQTT</strong>
+  </div>
+  <div class="ve-section-body">
+    <div class="ve-srv-fields" style="border-bottom:none;margin-bottom:0;padding-bottom:0;">
+      <div class="ve-field"><label>Host</label><input type="text" name="mqtt-host" value="${esc(h)}" style="width:130px"></div>
+      <div class="ve-field"><label>Port</label><input type="number" name="mqtt-port" value="${p}" min="1" max="65535" style="width:70px"></div>
+      <div class="ve-field"><label>Client ID</label><input type="text" name="mqtt-client" value="${esc(c)}" style="width:130px"></div>
+      <div class="ve-field"><label>User</label><input type="text" name="mqtt-user" value="${esc(u)}" style="width:100px"></div>
+      <div class="ve-field"><label>Jelszó</label><input type="password" name="mqtt-password" value="${esc(pw)}" style="width:100px"></div>
+      <div class="ve-field"><label>Prefix</label><input type="text" name="mqtt-prefix" value="${esc(pf)}" style="width:80px"></div>
+    </div>
+  </div>
+</div>`;
+}
+
+function renderBridgeVisualEditor(cfg) {
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) cfg = {};
+  const servers = Array.isArray(cfg.servers) ? cfg.servers : [];
+  let html = renderMqttSection(cfg.mqtt ?? {});
+  servers.forEach(srv => { html += renderServerSection(srv); });
+  html += `<div id="ve-add-server-row" style="margin-top:.35rem;">
+    <button class="btn btn-sm btn-outline-secondary ve-add-btn" onclick="veAddServer()">+ Szerver</button>
+  </div>`;
+  document.getElementById('bridge-config-visual').innerHTML = html;
+  document.getElementById('ve-filter').value = '';
+}
+
+// ===== Visual editor — collect =====
+
+function collectBridgeEditorData() {
+  const cfg = {};
+
+  const mqttBody = document.querySelector('#ve-mqtt .ve-section-body');
+  if (mqttBody) {
+    const port = parseInt(mqttBody.querySelector('[name=mqtt-port]').value);
+    cfg.mqtt = {
+      host:         mqttBody.querySelector('[name=mqtt-host]').value,
+      port:         isNaN(port) ? 1883 : port,
+      client_id:    mqttBody.querySelector('[name=mqtt-client]').value,
+      user:         mqttBody.querySelector('[name=mqtt-user]').value,
+      password:     mqttBody.querySelector('[name=mqtt-password]').value,
+      topic_prefix: mqttBody.querySelector('[name=mqtt-prefix]').value
+    };
+  }
+
+  cfg.servers = [];
+  document.querySelectorAll('.ve-server').forEach(srvEl => {
+    const body = srvEl.querySelector(':scope > .ve-section-body');
+    const id   = body.querySelector('[name=srv-id]').value.trim();
+    const host = body.querySelector('[name=srv-host]').value.trim();
+    if (!id || !host) return;
+
+    const srv = {
+      id, host,
+      port:             parseInt(body.querySelector('[name=srv-port]').value)     || 80,
+      user:             body.querySelector('[name=srv-user]').value,
+      password:         body.querySelector('[name=srv-password]').value,
+      poll_interval_sec: parseInt(body.querySelector('[name=srv-interval]').value) || 2
+    };
+
+    for (const kind of ['pca','relays','pwm']) {
+      const arr = [];
+      srvEl.querySelectorAll(`.ve-row[data-kind="${kind}"]`).forEach(row => {
+        const devId = parseInt(row.querySelector('[name=dev-id]').value);
+        if (devId > 0) {
+          const extra    = JSON.parse(row.dataset.extra || '{}');
+          const sensorId = parseInt(row.querySelector('[name=dev-sensor-id]').value) || 0;
+          const item = {
+            id:      devId,
+            name:    row.querySelector('[name=dev-name]').value,
+            type:    row.querySelector('[name=dev-type]').value || 'switch',
+            enabled: row.querySelector('[name=dev-enabled]').checked,
+            ...extra,
+          };
+          if (sensorId > 0) item._sensor_id = sensorId;
+          arr.push(item);
+        }
+      });
+      if (arr.length) srv[kind] = arr;
+    }
+
+    const sensors = [];
+    srvEl.querySelectorAll('.ve-row[data-kind="sensors"]').forEach(row => {
+      const devId = parseInt(row.querySelector('[name=dev-id]').value);
+      if (devId > 0) sensors.push({
+        id:      devId,
+        name:    row.querySelector('[name=dev-name]').value,
+        enabled: row.querySelector('[name=dev-enabled]').checked
+      });
+    });
+    if (sensors.length) srv.sensors = sensors;
+
+    const covers = [];
+    srvEl.querySelectorAll('.ve-row[data-kind="covers"]').forEach(row => {
+      const covId = row.querySelector('[name=cov-id]').value.trim();
+      if (!covId) return;
+      const upId    = parseInt(row.querySelector('[name=cov-up-id]').value)   || 0;
+      const dnId    = parseInt(row.querySelector('[name=cov-down-id]').value) || 0;
+      const extra   = JSON.parse(row.dataset.extra   || '{}');
+      const upExtra = JSON.parse(row.dataset.extraUp || '{}');
+      const dnExtra = JSON.parse(row.dataset.extraDn || '{}');
+      const cov = {
+        id:               covId,
+        name:             row.querySelector('[name=dev-name]').value,
+        enabled:          row.querySelector('[name=dev-enabled]').checked,
+        motor_timeout_sec: parseInt(row.querySelector('[name=cov-timeout]').value) || 90,
+        up: { type: row.querySelector('[name=cov-up-type]').value || 'pca', id: upId, ...upExtra },
+        ...extra,
+      };
+      if (dnId > 0) cov.down = { type: row.querySelector('[name=cov-down-type]').value || 'pca', id: dnId, ...dnExtra };
+      covers.push(cov);
+    });
+    if (covers.length) srv.covers = covers;
+
+    cfg.servers.push(srv);
   });
-  jsonEditorLoading = true;
-  const link = document.createElement('link');
-  link.rel = 'stylesheet';
-  link.href = 'https://cdn.jsdelivr.net/npm/jsoneditor@10/dist/jsoneditor.min.css';
-  document.head.appendChild(link);
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/jsoneditor@10/dist/jsoneditor.min.js';
-    script.onload = () => { jsonEditorLoaded = true; resolve(); };
-    script.onerror = reject;
-    document.head.appendChild(script);
+
+  return cfg;
+}
+
+// ===== Visual editor — actions =====
+
+function veToggleSection(hd) {
+  const body  = hd.nextElementSibling;
+  const arrow = hd.querySelector('.ve-arrow');
+  const open  = body.style.display !== 'none';
+  body.style.display = open ? 'none' : '';
+  arrow.textContent  = open ? '▶' : '▼';
+}
+
+function veDeleteRow(btn) {
+  const row = btn.closest('.ve-row');
+  const sub = row.closest('.ve-subsection');
+  row.remove();
+  if (sub) {
+    const body  = sub.querySelector('.ve-section-body');
+    const count = body.querySelectorAll('.ve-row').length;
+    sub.querySelector('.ve-count').textContent = count;
+    if (!count) body.innerHTML = '<div class="ve-empty">Nincs bejegyzés</div>';
+  }
+}
+
+function veDeleteServer(btn) {
+  if (confirm('Törlöd ezt a szervert?')) btn.closest('.ve-server').remove();
+}
+
+function veAddDevice(btn, kind) {
+  const sub  = btn.closest('.ve-subsection');
+  const body = sub.querySelector('.ve-section-body');
+  // Ensure subsection open
+  if (body.style.display === 'none') veToggleSection(sub.querySelector('.ve-section-hd'));
+  // Remove empty placeholder
+  const empty = body.querySelector('.ve-empty');
+  if (empty) empty.remove();
+
+  const div = document.createElement('div');
+  let html;
+  if      (kind === 'sensors') html = renderSensorRow({});
+  else if (kind === 'covers')  html = renderCoverRow({});
+  else                         html = renderOutputRow(kind, {});
+  div.innerHTML = html.trim();
+  body.appendChild(div.firstElementChild);
+
+  sub.querySelector('.ve-count').textContent = body.querySelectorAll('.ve-row').length;
+  const newRow = body.lastElementChild;
+  (newRow.querySelector('[name=dev-id]') || newRow.querySelector('[name=cov-id]'))?.focus();
+  newRow.scrollIntoView({ block: 'nearest' });
+}
+
+function veAddServer() {
+  const ve     = document.getElementById('bridge-config-visual');
+  const addRow = document.getElementById('ve-add-server-row');
+  const div    = document.createElement('div');
+  div.innerHTML = renderServerSection({}).trim();
+  ve.insertBefore(div.firstElementChild, addRow);
+  const newSrv = addRow.previousElementSibling;
+  newSrv.querySelector('[name=srv-id]')?.focus();
+}
+
+function veUpdateSrvHeader(input) {
+  const srv  = input.closest('.ve-server');
+  const id   = srv.querySelector('[name=srv-id]').value   || '(új)';
+  const host = srv.querySelector('[name=srv-host]').value || '–';
+  const title = srv.querySelector('.ve-srv-title');
+  title.childNodes[0].textContent = 'Szerver: ' + id + ' ';
+  srv.querySelector('.ve-srv-host').textContent = '(' + host + ')';
+}
+
+function veFilter(q) {
+  const lower = q.trim().toLowerCase();
+  document.querySelectorAll('#bridge-config-visual .ve-row').forEach(row => {
+    if (!lower) { row.classList.remove('ve-hidden'); return; }
+    const name  = (row.querySelector('[name=dev-name]')?.value  || '').toLowerCase();
+    const covId = (row.querySelector('[name=cov-id]')?.value    || '').toLowerCase();
+    const devId = String(row.querySelector('[name=dev-id]')?.value || '').toLowerCase();
+    row.classList.toggle('ve-hidden', !name.includes(lower) && !covId.includes(lower) && !devId.includes(lower));
   });
 }
 
-async function switchBridgeEditorMode(newMode) {
+// ===== Editor mode & API =====
+
+function switchBridgeEditorMode(newMode) {
   if (newMode === bridgeEditorMode) return;
   const fb = document.getElementById('bridge-save-fb');
   fb.textContent = '';
 
   if (newMode === 'visual') {
-    const rawValue = document.getElementById('bridge-config').value;
+    const rawVal = document.getElementById('bridge-config').value;
     let data;
-    try { data = JSON.parse(rawValue); } catch (e) {
+    try { data = JSON.parse(rawVal); } catch (e) {
       fb.textContent = 'Javítsd előbb a JSON hibát Raw módban: ' + e.message;
-      fb.style.color = 'red';
-      return;
+      fb.style.color = 'red'; return;
     }
-    try { await loadJsonEditorLib(); } catch {
-      fb.textContent = 'A vizuális szerkesztő nem töltődött be (hálózati hiba).';
-      fb.style.color = 'red';
-      return;
-    }
-    if (!jsonEditor) {
-      jsonEditor = new JSONEditor(document.getElementById('bridge-config-visual'), {
-        mode: 'tree',
-        modes: ['tree', 'view'],
-        onError: err => {
-          const f = document.getElementById('bridge-save-fb');
-          f.textContent = 'Szerkesztő hiba: ' + err.message;
-          f.style.color = 'red';
-        }
-      });
-    }
-    jsonEditor.set(data);
-    jsonEditor.expandAll();
-    document.getElementById('bridge-config').style.display = 'none';
+    renderBridgeVisualEditor(data);
+    document.getElementById('bridge-config').style.display        = 'none';
+    document.getElementById('ve-filter-row').style.display        = '';
     document.getElementById('bridge-config-visual').style.display = '';
   } else {
-    if (jsonEditor) {
-      try {
-        const data = jsonEditor.get();
-        document.getElementById('bridge-config').value = JSON.stringify(data, null, 2);
-      } catch (e) {
-        fb.textContent = 'Vizuális szerkesztő hibás állapotban: ' + e.message;
-        fb.style.color = 'red';
-        return;
-      }
+    let content;
+    try { content = JSON.stringify(collectBridgeEditorData(), null, 2); } catch (e) {
+      fb.textContent = 'Hiba: ' + e.message; fb.style.color = 'red'; return;
     }
+    document.getElementById('bridge-config').value                = content;
+    document.getElementById('ve-filter-row').style.display        = 'none';
     document.getElementById('bridge-config-visual').style.display = 'none';
-    document.getElementById('bridge-config').style.display = '';
+    document.getElementById('bridge-config').style.display        = '';
   }
 
   bridgeEditorMode = newMode;
@@ -311,16 +630,16 @@ async function loadBridgeConfig() {
   const content = d.ok ? d.content : ('Hiba: ' + d.error);
   document.getElementById('bridge-config').value = content;
   document.getElementById('bridge-save-fb').textContent = '';
-  if (bridgeEditorMode === 'visual' && jsonEditor && d.ok) {
-    try { jsonEditor.set(JSON.parse(content)); jsonEditor.expandAll(); } catch {}
+  if (bridgeEditorMode === 'visual' && d.ok) {
+    try { renderBridgeVisualEditor(JSON.parse(content)); } catch {}
   }
 }
 
 async function saveBridgeConfig() {
   const fb = document.getElementById('bridge-save-fb');
   let content;
-  if (bridgeEditorMode === 'visual' && jsonEditor) {
-    try { content = JSON.stringify(jsonEditor.get(), null, 2); } catch (e) {
+  if (bridgeEditorMode === 'visual') {
+    try { content = JSON.stringify(collectBridgeEditorData(), null, 2); } catch (e) {
       fb.textContent = 'Hiba: ' + e.message; fb.style.color = 'red'; return;
     }
   } else {
@@ -363,9 +682,7 @@ async function runDiscovery() {
   const btn = document.getElementById('btn-discovery');
   const spinner = document.getElementById('disc-spinner');
   const log = document.getElementById('disc-log');
-  btn.disabled = true;
-  spinner.style.display = '';
-  log.value = 'Futás…';
+  btn.disabled = true; spinner.style.display = ''; log.value = 'Futás…';
   try {
     const r = await fetch('/api/discovery/run', { method: 'POST' });
     const d = await r.json();
@@ -373,8 +690,7 @@ async function runDiscovery() {
   } catch (e) {
     log.value = 'Hálózati hiba: ' + e;
   } finally {
-    btn.disabled = false;
-    spinner.style.display = 'none';
+    btn.disabled = false; spinner.style.display = 'none';
   }
 }
 
@@ -384,16 +700,12 @@ async function fetchLog() {
   try {
     const r = await fetch('/api/bridge/log');
     const d = await r.json();
-    if (d.ok) {
-      el.value = d.lines;
-      if (atBottom) el.scrollTop = el.scrollHeight;
-    }
+    if (d.ok) { el.value = d.lines; if (atBottom) el.scrollTop = el.scrollHeight; }
   } catch {}
 }
 
 function setLogAuto(on) {
-  clearInterval(logTimer);
-  logTimer = null;
+  clearInterval(logTimer); logTimer = null;
   if (on) { fetchLog(); logTimer = setInterval(fetchLog, 3000); }
 }
 
