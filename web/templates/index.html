@@ -285,7 +285,7 @@ function typeSelectHtml(selected) {
 }
 
 function endTypeHtml(name, selected) {
-  return `<select name="${name}" style="width:58px">
+  return `<select name="${name}" style="width:72px">
     <option value="pca"${(selected||'pca')==='pca'?' selected':''}>pca</option>
     <option value="relay"${selected==='relay'?' selected':''}>relay</option>
   </select>`;
@@ -381,7 +381,7 @@ function renderServerSection(srv) {
     ${renderSubsection('relays', 'Relék',         srv.relays  ?? [], renderOutputRow.bind(null,'relays'))}
     ${renderSubsection('pwm',    'PWM',           srv.pwm     ?? [], renderOutputRow.bind(null,'pwm'))}
     ${renderSubsection('sensors','Érzékelők',     srv.sensors ?? [], renderSensorRow)}
-    ${renderSubsection('covers', 'Redők',         srv.covers  ?? [], renderCoverRow)}
+    ${renderSubsection('covers', 'Redőnyök',       srv.covers  ?? [], renderCoverRow)}
   </div>
 </div>`;
 }
