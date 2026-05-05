@@ -300,7 +300,7 @@ function renderOutputRow(kind, item) {
   for (const k of Object.keys(item)) if (k.startsWith('_') && k !== '_sensor_id') extra[k] = item[k];
   return `<div class="ve-row" data-kind="${kind}" data-extra="${esc(JSON.stringify(extra))}">
   <span class="ve-id-badge">#</span>
-  <input type="number" name="dev-id" value="${esc(id)}" min="1" style="width:50px" placeholder="ID">
+  <input type="number" name="dev-id" value="${esc(id)}" min="1" style="width:65px" placeholder="ID">
   <input type="text" class="ve-name" name="dev-name" value="${esc(name)}" placeholder="Név">
   ${typeSelectHtml(type)}
   <span class="ve-id-badge" title="Szenzor ID (0=nincs)">S:</span>
@@ -314,7 +314,7 @@ function renderSensorRow(item) {
   const id = item.id ?? '', name = item.name ?? '', en = item.enabled === true;
   return `<div class="ve-row" data-kind="sensors">
   <span class="ve-id-badge">#</span>
-  <input type="number" name="dev-id" value="${esc(id)}" min="1" style="width:50px" placeholder="ID">
+  <input type="number" name="dev-id" value="${esc(id)}" min="1" style="width:65px" placeholder="ID">
   <input type="text" class="ve-name" name="dev-name" value="${esc(name)}" placeholder="Név">
   <input type="checkbox" class="form-check-input" name="dev-enabled"${en?' checked':''} title="Engedélyezett">
   <button class="ve-del" onclick="veDeleteRow(this)" title="Törlés">✕</button>
