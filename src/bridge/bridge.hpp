@@ -72,6 +72,10 @@ public:
     net::awaitable<void> handle_command(const std::string& topic,
                                          const std::string& payload);
 
+    // Resets last-known states so the next poll republishes everything to the broker.
+    // Call after broker reconnect to restore retained state topics.
+    void schedule_resync();
+
     const std::string& server_id() const { return cfg_.server_id; }
 
 private:
@@ -110,6 +114,7 @@ private:
     std::unordered_map<int, bool>   pca_is_pwm_;        // id → pwm flag (hardware, never changes)
 
     std::string last_poll_error_;
+    bool        syncing_ = false;   // true during startup/resync poll — tags log lines as [startup sync]
 };
 
 // ── Bridge – top-level coordinator for all servers ────────────────────────────

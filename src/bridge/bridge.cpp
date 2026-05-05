@@ -417,11 +417,13 @@ net::awaitable<void> ServerBridge::publish_pca_state(const myio::PcaOutput& pca,
         co_await publisher_->async_publish(
             number_state_topic(topic_prefix_, cfg_.server_id, pca.id),
             std::to_string(pct), true);
-        myio::log("[{}] [myIO to broker] PCA {} → {}%", cfg_.server_id, pca.id, pct);
+        myio::log("[{}] [{}] PCA {} → {}%",
+                  cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", pca.id, pct);
         co_return;
     }
 
     const std::string on_off = (pca.state > pca.turn_off) ? "ON" : "OFF";
+    const char* tag = syncing_ ? "startup sync" : "myIO to broker";
     if (cfg.type == config::OutputType::Light) {
         co_await publisher_->async_publish(
             light_state_topic(topic_prefix_, cfg_.server_id, pca.id), on_off, true);
@@ -430,15 +432,15 @@ net::awaitable<void> ServerBridge::publish_pca_state(const myio::PcaOutput& pca,
             co_await publisher_->async_publish(
                 light_bright_topic(topic_prefix_, cfg_.server_id, pca.id),
                 std::to_string(pca.state), true);
-            myio::log("[{}] [myIO to broker] PCA {} → {} brightness={} ({}%)",
-                      cfg_.server_id, pca.id, on_off, pca.state, pct);
+            myio::log("[{}] [{}] PCA {} → {} brightness={} ({}%)",
+                      cfg_.server_id, tag, pca.id, on_off, pca.state, pct);
         } else {
-            myio::log("[{}] [myIO to broker] PCA {} → {}", cfg_.server_id, pca.id, on_off);
+            myio::log("[{}] [{}] PCA {} → {}", cfg_.server_id, tag, pca.id, on_off);
         }
     } else {
         co_await publisher_->async_publish(
             switch_state_topic(topic_prefix_, cfg_.server_id, pca.id), on_off, true);
-        myio::log("[{}] [myIO to broker] PCA {} → {}", cfg_.server_id, pca.id, on_off);
+        myio::log("[{}] [{}] PCA {} → {}", cfg_.server_id, tag, pca.id, on_off);
     }
 }
 
@@ -447,7 +449,8 @@ net::awaitable<void> ServerBridge::publish_relay_state(const myio::RelayOutput& 
     const char* on_off = relay.state ? "ON" : "OFF";
     co_await publisher_->async_publish(
         switch_state_topic(topic_prefix_, cfg_.server_id, relay.id), on_off, true);
-    myio::log("[{}] [myIO to broker] Relay {} → {}", cfg_.server_id, relay.id, on_off);
+    myio::log("[{}] [{}] Relay {} → {}",
+              cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", relay.id, on_off);
 }
 
 net::awaitable<void> ServerBridge::publish_cover_state(const config::CoverConfig& cover,
@@ -476,7 +479,8 @@ net::awaitable<void> ServerBridge::publish_pwm_state(const myio::PwmOutput& pwm,
         co_await publisher_->async_publish(
             number_state_topic(topic_prefix_, cfg_.server_id, pwm.id),
             std::to_string(pct), true);
-        myio::log("[{}] [myIO to broker] PWM {} → {}%", cfg_.server_id, pwm.id, pct);
+        myio::log("[{}] [{}] PWM {} → {}%",
+                  cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", pwm.id, pct);
         co_return;
     }
 
@@ -487,8 +491,8 @@ net::awaitable<void> ServerBridge::publish_pwm_state(const myio::PwmOutput& pwm,
     co_await publisher_->async_publish(
         light_bright_topic(topic_prefix_, cfg_.server_id, pwm.id),
         std::to_string(pwm.state), true);
-    myio::log("[{}] [myIO to broker] PWM {} → {} brightness={} ({}%)",
-              cfg_.server_id, pwm.id, on_off, pwm.state, pct);
+    myio::log("[{}] [{}] PWM {} → {} brightness={} ({}%)",
+              cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", pwm.id, on_off, pwm.state, pct);
 }
 
 net::awaitable<void> ServerBridge::publish_sensor_state(const myio::Sensor& sensor,
@@ -503,6 +507,17 @@ net::awaitable<void> ServerBridge::publish_sensor_state(const myio::Sensor& sens
     else co_return;
     co_await publisher_->async_publish(
         sensor_state_topic(topic_prefix_, cfg_.server_id, sensor.id), val, true);
+}
+
+// ── Resync ────────────────────────────────────────────────────────────────────
+
+void ServerBridge::schedule_resync() {
+    for (auto& [id, v] : last_pca_state_)   v = -1;
+    for (auto& [id, v] : last_relay_state_) v = -1;
+    for (auto& [id, v] : last_pwm_state_)   v = -1;
+    for (auto& [id, v] : last_sensor_val_)  v = std::numeric_limits<double>::max();
+    syncing_ = true;
+    myio::log("[{}] Broker reconnected – resync scheduled.", cfg_.server_id);
 }
 
 // ── Poll loop ─────────────────────────────────────────────────────────────────
@@ -550,6 +565,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
     for (const auto& [id, _] : relay_map)  last_relay_state_[id] = -1;
     for (const auto& [id, _] : pwm_map)    last_pwm_state_[id]   = -1;
     for (const auto& [id, _] : sensor_map) last_sensor_val_[id]  = std::numeric_limits<double>::max();
+    syncing_ = true;
 
     while (true) {
         std::exception_ptr caught;
@@ -670,6 +686,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
             }
         } else {
             last_poll_error_.clear();
+            syncing_ = false;
         }
 
         net::steady_timer timer(ex);
@@ -972,9 +989,11 @@ net::awaitable<void> Bridge::command_loop() {
             try {
                 co_await publisher_->async_subscribe(cfg_.mqtt.topic_prefix + "/#");
                 co_await publisher_->async_subscribe("homeassistant/status");
-                myio::log("[bridge] Reconnected – republishing discovery.");
-                for (auto& srv : servers_)
+                myio::log("[bridge] Reconnected – republishing discovery and scheduling state resync.");
+                for (auto& srv : servers_) {
                     co_await srv->publish_discovery();
+                    srv->schedule_resync();
+                }
             } catch (const std::exception& ex) {
                 myio::log(stderr, "[bridge] Reconnect setup error: {}", myio::short_what(ex));
             }
