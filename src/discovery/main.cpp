@@ -104,7 +104,7 @@ fetch_pca_desc(const myio::HttpConfig& hcfg) {
     try {
         body = myio::http_get_raw(hcfg, "/p_desc.xml");
     } catch (const std::exception& ex) {
-        myio::log(stderr, "[discovery] /p_desc.xml unavailable ({}): {}", hcfg.server_id, ex.what());
+        myio::log(stderr, "[discovery] /p_desc.xml unavailable ({}): {}", hcfg.server_id, myio::short_what(ex));
         return names;
     }
 
@@ -556,12 +556,12 @@ int main(int argc, char* argv[]) {
                 make_server_entry(is, state, hcfg, is.pca_default_type, enabled_map));
 
         } catch (const std::exception& ex) {
-            myio::log(stderr, "[discovery] ERROR ({}): {}", is.id, ex.what());
+            myio::log(stderr, "[discovery] ERROR ({}): {}", is.id, myio::short_what(ex));
             any_failed = true;
             servers_arr.push_back(json::object{
                 {"id",     is.id},
                 {"host",   is.host},
-                {"_error", ex.what()}
+                {"_error", myio::short_what(ex)}
             });
         }
     }

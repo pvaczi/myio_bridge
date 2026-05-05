@@ -2,10 +2,22 @@
 
 #include <chrono>
 #include <cstdio>
+#include <exception>
 #include <format>
 #include <print>
+#include <string>
 
 namespace myio {
+
+// Strip Boost internal source location from exception messages.
+// Boost appends " [boost.beast:N at /path/to/file.hpp:line in function '...']"
+// which is useful when debugging Boost itself but is noise in production logs.
+inline std::string short_what(const std::exception& ex) {
+    std::string msg = ex.what();
+    if (auto pos = msg.find(" [boost"); pos != std::string::npos)
+        msg.resize(pos);
+    return msg;
+}
 
 // ── Timestamp-prefixed logging ────────────────────────────────────────────────
 // All log messages are prefixed with the current local date and time,

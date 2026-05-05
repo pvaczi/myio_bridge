@@ -49,7 +49,7 @@ int main(int argc, char* argv[]) {
             if (ep) {
                 try { std::rethrow_exception(ep); }
                 catch (const std::exception& ex) {
-                    myio::log(stderr, "[bridge] Fatal error: {}", ex.what());
+                    myio::log(stderr, "[bridge] Fatal error: {}", myio::short_what(ex));
                 }
             }
         });

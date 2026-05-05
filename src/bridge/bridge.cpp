@@ -319,7 +319,7 @@ net::awaitable<void> ServerBridge::publish_discovery() {
                 pca_is_pwm_[pca.id] = pca.is_pwm;
         } catch (const std::exception& ex) {
             myio::log(stderr, "[{}] Could not determine PCA capabilities at discovery: {}",
-                      s, ex.what());
+                      s, myio::short_what(ex));
         }
     }
 
@@ -525,7 +525,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
                   cfg_.server_id, info.version, info.cpu, info.serial,
                   info.relay_count, info.pca_count, info.api);
     } catch (const std::exception& ex) {
-        myio::log(stderr, "[{}] Server info unavailable: {}", cfg_.server_id, ex.what());
+        myio::log(stderr, "[{}] Server info unavailable: {}", cfg_.server_id, myio::short_what(ex));
     }
 
     myio::log("[{}] Poll loop started, interval={}s",
@@ -651,7 +651,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
         if (caught) {
             try { std::rethrow_exception(caught); }
             catch (const std::exception& ex) {
-                std::string msg = ex.what();
+                std::string msg = myio::short_what(ex);
                 if (msg == last_poll_error_) {
                     myio::log(stderr, "[{}] Poll error: (same as previous)", cfg_.server_id);
                 } else {
@@ -756,7 +756,7 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
                                     cover_position_topic(prefix, sid, cov_id), std::to_string(end_pos), true);
                             } catch (const std::exception& ex) {
                                 myio::log(stderr, "[{}] Cover {} motor timer error: {}",
-                                          sid, cov_id, ex.what());
+                                          sid, cov_id, myio::short_what(ex));
                             } catch (...) {}
                         }(), net::detached);
                 }
@@ -906,7 +906,7 @@ net::awaitable<void> Bridge::run() {
                     try { std::rethrow_exception(ep); }
                     catch (const std::exception& ex) {
                         myio::log(stderr, "[{}] Poll coroutine crashed: {}",
-                                  sid, ex.what());
+                                  sid, myio::short_what(ex));
                     }
                 }
             });
@@ -937,7 +937,7 @@ net::awaitable<void> Bridge::command_loop() {
         if (caught) {
             try { std::rethrow_exception(caught); }
             catch (const std::exception& ex) {
-                myio::log(stderr, "[bridge] Command loop error: {}", ex.what());
+                myio::log(stderr, "[bridge] Command loop error: {}", myio::short_what(ex));
             }
             net::steady_timer t(co_await net::this_coro::executor);
             t.expires_after(30s);
@@ -949,7 +949,7 @@ net::awaitable<void> Bridge::command_loop() {
                 for (auto& srv : servers_)
                     co_await srv->publish_discovery();
             } catch (const std::exception& ex) {
-                myio::log(stderr, "[bridge] Reconnect setup error: {}", ex.what());
+                myio::log(stderr, "[bridge] Reconnect setup error: {}", myio::short_what(ex));
             }
         }
     }
