@@ -18,6 +18,8 @@ myIO server ──HTTP──▶ bridge ──MQTT──▶ Home Assistant
 
 When Home Assistant restarts, it sends a birth message (`homeassistant/status = online`). The bridge detects this and automatically republishes all discovery messages so entities reappear without restarting the bridge.
 
+When the MQTT broker restarts (and retained state messages are lost), the bridge detects the reconnection and schedules a full state resync: on the next poll cycle it republishes the current state of all entities, restoring the broker's retained messages and keeping Home Assistant in sync.
+
 ## Prerequisites
 
 - CMake ≥ 3.25
