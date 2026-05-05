@@ -125,7 +125,8 @@ static void parse_sensors(const json::object& obj, ServerState& state) {
         } else if (s.id == 200) {
             if (const auto* v = entry->if_contains("imp"))
                 if (const auto* n = v->if_int64())
-                    s.energy = *n / 100.0;
+                    if (*n != 0)
+                        s.energy = *n / 100.0;  // imp==0 → no meter connected
         } else if (s.id >= 201 && s.id <= 203) {
             if (const auto* v = entry->if_contains("P"))
                 if (const auto* n = v->if_int64())
