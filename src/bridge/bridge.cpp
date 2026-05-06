@@ -344,9 +344,6 @@ net::awaitable<void> ServerBridge::publish_discovery() {
             switch (e.type) {
                 case config::OutputType::Light: {
                     const bool can_dim = pca_is_pwm_.count(e.id) && pca_is_pwm_.at(e.id);
-                    if (!can_dim)
-                        myio::log(stderr, "[{}] PCA {} configured as light but pwm=0 – "
-                                         "publishing without brightness control", s, e.id);
                     payload = make_light_discovery(p, s, e, can_dim);
                     break;
                 }
