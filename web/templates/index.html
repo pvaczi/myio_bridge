@@ -435,7 +435,7 @@ function renderServerSection(srv) {
       <div class="ve-field"><label>Jelszó</label><input type="password" name="srv-password" value="${esc(pass)}" style="width:90px"></div>
       <div class="ve-field"><label>Int. (s)</label><input type="number" name="srv-interval" value="${interval}" min="1" style="width:60px"></div>
       <div class="ve-field"><label>Log küszöb</label><input type="number" name="srv-log-threshold" value="${logThreshold}" step="0.05" min="0" style="width:65px" title="Minimum szenzorváltozás a loghoz (°C/egység); 0 = minden publish logol"></div>
-      <div class="ve-field"><label>Startup log</label><input type="checkbox" class="form-check-input mt-1" name="srv-log-startup"${logStartup ? ' checked' : ''} title="Startup/resync állapotok logolása"></div>
+      <div class="ve-field"><label>Startup log</label><input type="checkbox" name="srv-log-startup"${logStartup ? ' checked' : ''} title="Startup/resync állapotok logolása" style="width:1rem;height:1rem;margin-top:.3rem;cursor:pointer"></div>
     </div>
     ${renderSubsection('pca',    'PCA kimenetek', srv.pca     ?? [], renderOutputRow.bind(null,'pca'))}
     ${renderSubsection('relays', 'Relék',         srv.relays  ?? [], renderOutputRow.bind(null,'relays'))}
