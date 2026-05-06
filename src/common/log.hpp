@@ -10,12 +10,16 @@
 namespace myio {
 
 // Strip Boost internal source location from exception messages.
-// Boost appends " [boost.beast:N at /path/to/file.hpp:line in function '...']"
+// Boost appends " [boost.beast:N at /path...]" or " [system:N at /path...]"
 // which is useful when debugging Boost itself but is noise in production logs.
 inline std::string short_what(const std::exception& ex) {
     std::string msg = ex.what();
-    if (auto pos = msg.find(" [boost"); pos != std::string::npos)
-        msg.resize(pos);
+    for (const char* tag : {" [boost", " [system:"}) {
+        if (auto pos = msg.find(tag); pos != std::string::npos) {
+            msg.resize(pos);
+            break;
+        }
+    }
     return msg;
 }
 
