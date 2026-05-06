@@ -418,6 +418,8 @@ function renderServerSection(srv) {
   const id = srv.id ?? '', host = srv.host ?? '';
   const port = srv.port ?? 80, user = srv.user ?? 'admin';
   const pass = srv.password ?? 'admin', interval = srv.poll_interval_sec ?? 2;
+  const logThreshold = srv.sensor_log_threshold ?? 0.1;
+  const logStartup   = srv.log_startup_sync === true;
   return `<div class="ve-section ve-server">
   <div class="ve-section-hd" onclick="veToggleSection(this)">
     <span class="ve-arrow">▼</span>
@@ -432,6 +434,8 @@ function renderServerSection(srv) {
       <div class="ve-field"><label>User</label><input type="text" name="srv-user" value="${esc(user)}" style="width:90px"></div>
       <div class="ve-field"><label>Jelszó</label><input type="password" name="srv-password" value="${esc(pass)}" style="width:90px"></div>
       <div class="ve-field"><label>Int. (s)</label><input type="number" name="srv-interval" value="${interval}" min="1" style="width:60px"></div>
+      <div class="ve-field"><label>Log küszöb</label><input type="number" name="srv-log-threshold" value="${logThreshold}" step="0.05" min="0" style="width:65px" title="Minimum szenzorváltozás a loghoz (°C/egység); 0 = minden publish logol"></div>
+      <div class="ve-field"><label>Startup log</label><input type="checkbox" class="form-check-input mt-1" name="srv-log-startup"${logStartup ? ' checked' : ''} title="Startup/resync állapotok logolása"></div>
     </div>
     ${renderSubsection('pca',    'PCA kimenetek', srv.pca     ?? [], renderOutputRow.bind(null,'pca'))}
     ${renderSubsection('relays', 'Relék',         srv.relays  ?? [], renderOutputRow.bind(null,'relays'))}
@@ -499,12 +503,15 @@ function collectBridgeEditorData() {
     const host = body.querySelector('[name=srv-host]').value.trim();
     if (!id || !host) return;
 
+    const logThresholdVal = parseFloat(body.querySelector('[name=srv-log-threshold]').value);
     const srv = {
       id, host,
-      port:             parseInt(body.querySelector('[name=srv-port]').value)     || 80,
-      user:             body.querySelector('[name=srv-user]').value,
-      password:         body.querySelector('[name=srv-password]').value,
-      poll_interval_sec: parseInt(body.querySelector('[name=srv-interval]').value) || 2
+      port:                 parseInt(body.querySelector('[name=srv-port]').value)     || 80,
+      user:                 body.querySelector('[name=srv-user]').value,
+      password:             body.querySelector('[name=srv-password]').value,
+      poll_interval_sec:    parseInt(body.querySelector('[name=srv-interval]').value) || 2,
+      sensor_log_threshold: isNaN(logThresholdVal) ? 0.1 : logThresholdVal,
+      log_startup_sync:     body.querySelector('[name=srv-log-startup]').checked
     };
 
     for (const kind of ['pca','relays','pwm']) {
