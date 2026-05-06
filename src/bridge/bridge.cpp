@@ -842,7 +842,9 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
         const std::string post = is_pca_light
             ? std::format("PCA*{}={}", id, brightness)
             : std::format("fet*{}={}", id - 100, brightness);
-        myio::log("[{}] [broker to myIO] Light brightness {} → {}", cfg_.server_id, id, post);
+        myio::log("[{}] [broker to myIO] Light brightness {} → {} ({}%)",
+                  cfg_.server_id, id, post,
+                  static_cast<int>(std::round(brightness / 255.0 * 100.0)));
         co_await client_->async_send_command(post);
 
         // Optimistic state publish — like ON/OFF, don't wait for next poll
