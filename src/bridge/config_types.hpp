@@ -72,6 +72,8 @@ struct ServerConfig {
     std::string           user             = "admin";
     std::string           password         = "admin";
     int                   poll_interval_sec = 2;
+    double                sensor_log_threshold = 0.1;  // min. change to log; 0 = log every publish
+    bool                  log_startup_sync     = false; // log entity states during startup/resync
 
     // ALL entries are loaded (enabled and disabled alike) so the bridge
     // can send MQTT undiscovery messages for disabled entries.

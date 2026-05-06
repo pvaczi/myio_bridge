@@ -24,8 +24,10 @@ struct InputServer {
     std::uint16_t port             = 80;
     std::string   user             = "admin";
     std::string   password         = "admin";
-    std::string   pca_default_type = "switch";  // default HA type for PCA outputs
-    int           poll_interval_sec = 5;
+    std::string   pca_default_type      = "switch";  // default HA type for PCA outputs
+    int           poll_interval_sec     = 5;
+    double        sensor_log_threshold  = 0.1;
+    bool          log_startup_sync      = false;
 };
 
 struct InputConfig {
@@ -66,7 +68,12 @@ static InputConfig read_input(const std::string& path) {
             if (const auto* v = s.if_contains("user"))             is.user             = std::string(v->as_string());
             if (const auto* v = s.if_contains("password"))         is.password         = std::string(v->as_string());
             if (const auto* v = s.if_contains("pca_default_type"))  is.pca_default_type  = std::string(v->as_string());
-            if (const auto* v = s.if_contains("poll_interval_sec")) is.poll_interval_sec = static_cast<int>(v->as_int64());
+            if (const auto* v = s.if_contains("poll_interval_sec"))    is.poll_interval_sec    = static_cast<int>(v->as_int64());
+            if (const auto* v = s.if_contains("sensor_log_threshold")) {
+                if (v->is_double())  is.sensor_log_threshold = v->as_double();
+                else if (v->is_int64()) is.sensor_log_threshold = static_cast<double>(v->as_int64());
+            }
+            if (const auto* v = s.if_contains("log_startup_sync"))    if (v->is_bool()) is.log_startup_sync = v->as_bool();
             if (is.id.empty() || is.host.empty())
                 throw std::runtime_error("Server entry requires 'id' and 'host'");
             cfg.servers.push_back(std::move(is));
@@ -438,7 +445,9 @@ static json::object make_server_entry(const InputServer& is,
     srv["port"]              = is.port;
     srv["user"]              = is.user;
     srv["password"]          = is.password;  // TODO: encryption
-    srv["poll_interval_sec"] = is.poll_interval_sec;
+    srv["poll_interval_sec"]    = is.poll_interval_sec;
+    srv["sensor_log_threshold"] = is.sensor_log_threshold;
+    srv["log_startup_sync"]     = is.log_startup_sync;
 
     // PCA outputs – named only; cover endpoints get "cover_up" / "cover_down" type
     json::array pca_arr;

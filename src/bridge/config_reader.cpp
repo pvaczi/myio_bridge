@@ -35,6 +35,15 @@ static bool bool_or(const json::object& o, std::string_view key, bool fallback =
     return fallback;
 }
 
+static double double_or(const json::object& o, std::string_view key, double fallback = 0.0) {
+    if (const auto* v = o.if_contains(key)) {
+        if (const auto* d = v->if_double())  return *d;
+        if (const auto* n = v->if_int64())   return static_cast<double>(*n);
+        if (const auto* n = v->if_uint64())  return static_cast<double>(*n);
+    }
+    return fallback;
+}
+
 static OutputType parse_output_type(const json::object& o) {
     const auto t = str_or(o, "type", "switch");
     if (t == "light")         return OutputType::Light;
@@ -74,7 +83,9 @@ static ServerConfig parse_server(const json::object& o) {
     sc.port              = static_cast<std::uint16_t>(int_or(o, "port", 80));
     sc.user              = str_or(o, "user",     "admin");
     sc.password          = str_or(o, "password", "admin");
-    sc.poll_interval_sec = int_or(o, "poll_interval_sec", 2);
+    sc.poll_interval_sec     = int_or   (o, "poll_interval_sec",    2);
+    sc.sensor_log_threshold  = double_or(o, "sensor_log_threshold", 0.1);
+    sc.log_startup_sync      = bool_or  (o, "log_startup_sync",     false);
 
     if (sc.server_id.empty() || sc.host.empty())
         throw std::runtime_error("Server entry requires 'id' and 'host'");

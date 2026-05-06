@@ -95,7 +95,10 @@ private:
     net::awaitable<void> publish_cover_state(const config::CoverConfig& cover,
                                               int up_state, int down_state, int dir_hint);
     net::awaitable<void> publish_sensor_state(const myio::Sensor&        sensor,
-                                               const config::SensorConfig& cfg);
+                                               const config::SensorConfig& cfg,
+                                               bool                        do_log = true);
+
+    bool should_log_now() const { return !syncing_ || cfg_.log_startup_sync; }
 
     config::ServerConfig                cfg_;
     std::string                         topic_prefix_;
@@ -106,7 +109,8 @@ private:
     std::unordered_map<int, int>    last_pca_state_;    // id → state (0–255); negative id = cover combined
     std::unordered_map<int, int>    last_relay_state_;  // id → state (0/1); negative id = cover combined
     std::unordered_map<int, int>    last_pwm_state_;    // id → state (0–255)
-    std::unordered_map<int, double> last_sensor_val_;   // id → value
+    std::unordered_map<int, double> last_sensor_val_;        // id → last published value
+    std::unordered_map<int, double> last_sensor_logged_val_; // id → last logged value
     std::unordered_map<int, int>                    last_cover_dir_;     // -(up.id) → +1=up, -1=down
     std::unordered_map<int, std::shared_ptr<bool>> last_cover_cancel_;  // -(up.id) → motor timeout cancel flag
 

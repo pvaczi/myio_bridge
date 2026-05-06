@@ -417,8 +417,9 @@ net::awaitable<void> ServerBridge::publish_pca_state(const myio::PcaOutput& pca,
         co_await publisher_->async_publish(
             number_state_topic(topic_prefix_, cfg_.server_id, pca.id),
             std::to_string(pct), true);
-        myio::log("[{}] [{}] PCA {} ({}) → {}%",
-                  cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", pca.id, cfg.name, pct);
+        if (should_log_now())
+            myio::log("[{}] [{}] PCA {} ({}) → {}%",
+                      cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", pca.id, cfg.name, pct);
         co_return;
     }
 
@@ -432,15 +433,18 @@ net::awaitable<void> ServerBridge::publish_pca_state(const myio::PcaOutput& pca,
             co_await publisher_->async_publish(
                 light_bright_topic(topic_prefix_, cfg_.server_id, pca.id),
                 std::to_string(pca.state), true);
-            myio::log("[{}] [{}] PCA {} ({}) → {} brightness={} ({}%)",
-                      cfg_.server_id, tag, pca.id, cfg.name, on_off, pca.state, pct);
+            if (should_log_now())
+                myio::log("[{}] [{}] PCA {} ({}) → {} brightness={} ({}%)",
+                          cfg_.server_id, tag, pca.id, cfg.name, on_off, pca.state, pct);
         } else {
-            myio::log("[{}] [{}] PCA {} ({}) → {}", cfg_.server_id, tag, pca.id, cfg.name, on_off);
+            if (should_log_now())
+                myio::log("[{}] [{}] PCA {} ({}) → {}", cfg_.server_id, tag, pca.id, cfg.name, on_off);
         }
     } else {
         co_await publisher_->async_publish(
             switch_state_topic(topic_prefix_, cfg_.server_id, pca.id), on_off, true);
-        myio::log("[{}] [{}] PCA {} ({}) → {}", cfg_.server_id, tag, pca.id, cfg.name, on_off);
+        if (should_log_now())
+            myio::log("[{}] [{}] PCA {} ({}) → {}", cfg_.server_id, tag, pca.id, cfg.name, on_off);
     }
 }
 
@@ -449,8 +453,9 @@ net::awaitable<void> ServerBridge::publish_relay_state(const myio::RelayOutput& 
     const char* on_off = relay.state ? "ON" : "OFF";
     co_await publisher_->async_publish(
         switch_state_topic(topic_prefix_, cfg_.server_id, relay.id), on_off, true);
-    myio::log("[{}] [{}] Relay {} ({}) → {}",
-              cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", relay.id, cfg.name, on_off);
+    if (should_log_now())
+        myio::log("[{}] [{}] Relay {} ({}) → {}",
+                  cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", relay.id, cfg.name, on_off);
 }
 
 net::awaitable<void> ServerBridge::publish_cover_state(const config::CoverConfig& cover,
@@ -479,8 +484,9 @@ net::awaitable<void> ServerBridge::publish_pwm_state(const myio::PwmOutput& pwm,
         co_await publisher_->async_publish(
             number_state_topic(topic_prefix_, cfg_.server_id, pwm.id),
             std::to_string(pct), true);
-        myio::log("[{}] [{}] PWM {} ({}) → {}%",
-                  cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", pwm.id, cfg.name, pct);
+        if (should_log_now())
+            myio::log("[{}] [{}] PWM {} ({}) → {}%",
+                      cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", pwm.id, cfg.name, pct);
         co_return;
     }
 
@@ -491,12 +497,14 @@ net::awaitable<void> ServerBridge::publish_pwm_state(const myio::PwmOutput& pwm,
     co_await publisher_->async_publish(
         light_bright_topic(topic_prefix_, cfg_.server_id, pwm.id),
         std::to_string(pwm.state), true);
-    myio::log("[{}] [{}] PWM {} ({}) → {} brightness={} ({}%)",
-              cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", pwm.id, cfg.name, on_off, pwm.state, pct);
+    if (should_log_now())
+        myio::log("[{}] [{}] PWM {} ({}) → {} brightness={} ({}%)",
+                  cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", pwm.id, cfg.name, on_off, pwm.state, pct);
 }
 
 net::awaitable<void> ServerBridge::publish_sensor_state(const myio::Sensor& sensor,
-                                                          const config::SensorConfig& cfg) {
+                                                          const config::SensorConfig& cfg,
+                                                          bool do_log) {
     std::string val;
     if      (sensor.temperature) val = std::format("{:.2f}", *sensor.temperature);
     else if (sensor.humidity)    val = std::format("{:.2f}", *sensor.humidity);
@@ -507,8 +515,9 @@ net::awaitable<void> ServerBridge::publish_sensor_state(const myio::Sensor& sens
     else co_return;
     co_await publisher_->async_publish(
         sensor_state_topic(topic_prefix_, cfg_.server_id, sensor.id), val, true);
-    myio::log("[{}] [{}] Sensor {} ({}) → {}",
-              cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", sensor.id, cfg.name, val);
+    if (do_log)
+        myio::log("[{}] [{}] Sensor {} ({}) → {}",
+                  cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", sensor.id, cfg.name, val);
 }
 
 // ── Resync ────────────────────────────────────────────────────────────────────
@@ -517,7 +526,8 @@ void ServerBridge::schedule_resync() {
     for (auto& [id, v] : last_pca_state_)   v = -1;
     for (auto& [id, v] : last_relay_state_) v = -1;
     for (auto& [id, v] : last_pwm_state_)   v = -1;
-    for (auto& [id, v] : last_sensor_val_)  v = std::numeric_limits<double>::max();
+    for (auto& [id, v] : last_sensor_val_)        v = std::numeric_limits<double>::max();
+    for (auto& [id, v] : last_sensor_logged_val_) v = std::numeric_limits<double>::max();
     syncing_ = true;
     myio::log("[{}] Broker reconnected – resync scheduled.", cfg_.server_id);
 }
@@ -668,7 +678,12 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 auto& last = last_sensor_val_[sensor.id];
                 if (std::abs(last - val) > 0.005) {
                     last = val;
-                    co_await publish_sensor_state(sensor, *it->second);
+                    auto& last_logged = last_sensor_logged_val_[sensor.id];
+                    const bool do_log = should_log_now() &&
+                                        (cfg_.sensor_log_threshold <= 0.0 ||
+                                         std::abs(last_logged - val) >= cfg_.sensor_log_threshold);
+                    if (do_log) last_logged = val;
+                    co_await publish_sensor_state(sensor, *it->second, do_log);
                 }
             }
 
