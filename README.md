@@ -231,6 +231,18 @@ Example — log only changes ≥ 0.5°C and keep startup quiet (default):
 "log_startup_sync": false
 ```
 
+Individual sensors can override the server threshold with a per-sensor `log_threshold` field. Set it to `0` to log every publish for that sensor, or to a higher value to reduce noise from a noisy sensor. Omit the field (or set it to `-1`) to use the server-level default.
+
+```json
+"sensors": [
+  { "id": 1, "name": "Outdoor temperature", "enabled": true },
+  { "id": 2, "name": "Floor temperature",   "enabled": true, "log_threshold": 0.5 },
+  { "id": 3, "name": "Power meter",         "enabled": true, "log_threshold": 10.0 }
+]
+```
+
+The Visual editor exposes the per-sensor threshold as a small **Δ** field in each sensor row (`-1` = server default).
+
 ## MQTT topics
 
 All topics are prefixed with `topic_prefix` (default: `myio`).
