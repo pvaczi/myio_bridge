@@ -130,9 +130,10 @@ static ServerConfig parse_server(const json::object& o) {
         for (const auto& item : arr->as_array()) {
             const auto& e = item.as_object();
             SensorConfig sen;
-            sen.id      = int_or(e, "id");
-            sen.name    = str_or(e, "name");
-            sen.enabled = bool_or(e, "enabled");
+            sen.id            = int_or   (e, "id");
+            sen.name          = str_or   (e, "name");
+            sen.enabled       = bool_or  (e, "enabled");
+            sen.log_threshold = double_or(e, "log_threshold", -1.0);
             if (sen.id > 0) sc.sensors.push_back(std::move(sen));
         }
 

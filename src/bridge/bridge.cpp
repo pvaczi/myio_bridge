@@ -676,9 +676,12 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 if (std::abs(last - val) > 0.005) {
                     last = val;
                     auto& last_logged = last_sensor_logged_val_[sensor.id];
+                    const double thr = (it->second->log_threshold >= 0.0)
+                                         ? it->second->log_threshold
+                                         : cfg_.sensor_log_threshold;
                     const bool do_log = should_log_now() &&
-                                        (cfg_.sensor_log_threshold <= 0.0 ||
-                                         std::abs(last_logged - val) >= cfg_.sensor_log_threshold);
+                                        (thr <= 0.0 ||
+                                         std::abs(last_logged - val) >= thr);
                     if (do_log) last_logged = val;
                     co_await publish_sensor_state(sensor, *it->second, do_log);
                 }

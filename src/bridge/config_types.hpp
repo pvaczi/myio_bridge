@@ -46,6 +46,7 @@ struct SensorConfig {
     int         id;
     std::string name;
     bool        enabled;
+    double      log_threshold = -1.0;  // -1 = use server-level sensor_log_threshold
 };
 
 // ── One end of a cover (shutter) ─────────────────────────────────────────────

@@ -312,10 +312,12 @@ function renderOutputRow(kind, item) {
 
 function renderSensorRow(item) {
   const id = item.id ?? '', name = item.name ?? '', en = item.enabled === true;
+  const thr = item.log_threshold ?? -1;
   return `<div class="ve-row" data-kind="sensors">
   <span class="ve-id-badge">#</span>
   <input type="number" name="dev-id" value="${esc(id)}" min="1" style="width:65px" placeholder="ID">
   <input type="text" class="ve-name" name="dev-name" value="${esc(name)}" placeholder="Név">
+  <input type="number" name="sen-log-threshold" value="${thr}" step="0.05" min="-1" style="width:60px" title="Egyedi log küszöb (-1 = szerver alapért.)">
   <input type="checkbox" class="form-check-input" name="dev-enabled"${en?' checked':''} title="Engedélyezett">
   <button class="ve-del" onclick="veDeleteRow(this)" title="Törlés">✕</button>
 </div>`;
@@ -538,11 +540,16 @@ function collectBridgeEditorData() {
     const sensors = [];
     srvEl.querySelectorAll('.ve-row[data-kind="sensors"]').forEach(row => {
       const devId = parseInt(row.querySelector('[name=dev-id]').value);
-      if (devId > 0) sensors.push({
-        id:      devId,
-        name:    row.querySelector('[name=dev-name]').value,
-        enabled: row.querySelector('[name=dev-enabled]').checked
-      });
+      if (devId > 0) {
+        const thrVal = parseFloat(row.querySelector('[name=sen-log-threshold]').value);
+        const entry = {
+          id:      devId,
+          name:    row.querySelector('[name=dev-name]').value,
+          enabled: row.querySelector('[name=dev-enabled]').checked
+        };
+        if (!isNaN(thrVal) && thrVal >= 0) entry.log_threshold = thrVal;
+        sensors.push(entry);
+      }
     });
     if (sensors.length) srv.sensors = sensors;
 
