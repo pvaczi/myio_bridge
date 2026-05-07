@@ -682,7 +682,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
                     const bool do_log = should_log_now() &&
                                         (thr <= 0.0 ||
                                          std::abs(last_logged - val) >= thr);
-                    if (do_log) last_logged = val;
+                    if (do_log || syncing_) last_logged = val;
                     co_await publish_sensor_state(sensor, *it->second, do_log);
                 }
             }
