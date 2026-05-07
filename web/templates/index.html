@@ -317,7 +317,8 @@ function renderSensorRow(item) {
   <span class="ve-id-badge">#</span>
   <input type="number" name="dev-id" value="${esc(id)}" min="1" style="width:65px" placeholder="ID">
   <input type="text" class="ve-name" name="dev-name" value="${esc(name)}" placeholder="Név">
-  <input type="number" name="sen-log-threshold" value="${thr}" step="0.05" min="-1" style="width:60px" title="Egyedi log küszöb (-1 = szerver alapért.)">
+  <span class="ve-id-badge" style="flex-shrink:0" title="Egyedi log küszöb (-1 = szerver alapért.)">Δ</span>
+  <input type="number" name="sen-log-threshold" value="${thr}" step="0.05" min="-1" style="width:60px;flex-shrink:0" title="Egyedi log küszöb (-1 = szerver alapért.)">
   <input type="checkbox" class="form-check-input" name="dev-enabled"${en?' checked':''} title="Engedélyezett">
   <button class="ve-del" onclick="veDeleteRow(this)" title="Törlés">✕</button>
 </div>`;
