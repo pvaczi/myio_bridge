@@ -117,7 +117,9 @@ static void parse_sensors(const json::object& obj, ServerState& state) {
         if (s.id >= 1 && s.id <= 100) {
             if (const auto* v = entry->if_contains("temp"))
                 if (const auto* n = v->if_int64())
-                    s.temperature = *n / 100.0;
+                    // ±127°C = disconnected DS18B20; ±126°C = virtual sensor timeout
+                    if (*n != 12700 && *n != -12700 && *n != 12600 && *n != -12600)
+                        s.temperature = *n / 100.0;
         } else if (s.id >= 101 && s.id <= 108) {
             if (const auto* v = entry->if_contains("hum"))
                 if (const auto* n = v->if_int64())

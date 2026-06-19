@@ -671,7 +671,15 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 if      (sensor.temperature) val = *sensor.temperature;
                 else if (sensor.humidity)    val = *sensor.humidity;
                 else if (sensor.power)       val = *sensor.power;
-                else continue;
+                else {
+                    auto& last = last_sensor_val_[sensor.id];
+                    if (last != std::numeric_limits<double>::max()) {
+                        myio::log(stderr, "[{}] Sensor {} ({}) error value – not published",
+                                  cfg_.server_id, sensor.id, it->second->name);
+                        last = std::numeric_limits<double>::max();
+                    }
+                    continue;
+                }
                 auto& last = last_sensor_val_[sensor.id];
                 if (std::abs(last - val) > 0.005) {
                     last = val;
