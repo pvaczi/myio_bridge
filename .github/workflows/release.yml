@@ -5,9 +5,6 @@ on:
     tags:
       - "v*"
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,10 +20,10 @@ jobs:
           apt-get install -y --no-install-recommends \
             cmake ninja-build clang git curl zip unzip pkg-config ca-certificates
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Cache vcpkg
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /opt/vcpkg
           key: vcpkg-${{ hashFiles('vcpkg.json') }}
@@ -46,6 +43,7 @@ jobs:
             -DVCPKG_TARGET_TRIPLET=x64-linux \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_BUILD_TYPE=Release \
+            -DBRIDGE_VERSION=${{ github.ref_name }} \
             -G Ninja
 
       - name: Build
@@ -57,6 +55,6 @@ jobs:
           tar -czf myio-bridge-linux-x86_64.tar.gz -C build bridge discovery
 
       - name: Upload release artifact
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: myio-bridge-linux-x86_64.tar.gz

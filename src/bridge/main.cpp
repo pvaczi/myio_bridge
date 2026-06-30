@@ -11,10 +11,21 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+
+#ifndef BRIDGE_VERSION
+#define BRIDGE_VERSION "dev"
+#endif
 
 int main(int argc, char* argv[]) {
+    if (argc > 1 && std::string_view(argv[1]) == "--version") {
+        std::println("myIO bridge {}", BRIDGE_VERSION);
+        return 0;
+    }
+
     const std::string config_path = (argc > 1) ? argv[1] : "bridge.json";
 
+    myio::log("[bridge] version {}", BRIDGE_VERSION);
     myio::log("[bridge] Loading config: {}", config_path);
 
     config::BridgeConfig cfg;

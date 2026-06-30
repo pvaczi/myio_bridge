@@ -95,7 +95,10 @@
 </head>
 <body>
 <div class="container-fluid" style="max-width: 860px;">
-  <h4 class="mb-3">myIO Bridge Control</h4>
+  <h4 class="mb-3">myIO Bridge Control
+    <span id="app-version" class="badge bg-secondary align-middle"
+          style="font-size:.55em;font-weight:normal;vertical-align:middle;" title="Telepített bridge verzió">…</span>
+  </h4>
 
   <ul class="nav nav-tabs mb-3">
     <li class="nav-item">
@@ -780,6 +783,16 @@ function setLogAuto(on) {
   if (on) { fetchLog(); logTimer = setInterval(fetchLog, 3000); }
 }
 
+async function fetchVersion() {
+  const el = document.getElementById('app-version');
+  try {
+    const r = await fetch('/api/version');
+    const d = await r.json();
+    el.textContent = (d.ok && d.version) ? d.version.replace(/^myIO bridge\s*/, '') : '?';
+  } catch { el.textContent = '?'; }
+}
+
+fetchVersion();
 fetchStatus();
 setInterval(fetchStatus, 5000);
 </script>

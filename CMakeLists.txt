@@ -9,6 +9,12 @@ project(myIO_bridge
     LANGUAGES C CXX
 )
 
+# ── Version ───────────────────────────────────────────────────────────────────
+# CI injects the git tag via -DBRIDGE_VERSION=${github.ref_name}; "dev" locally.
+if(NOT DEFINED BRIDGE_VERSION)
+    set(BRIDGE_VERSION "dev")
+endif()
+
 # ── C++23 ─────────────────────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -95,6 +101,8 @@ target_link_libraries(bridge
     PRIVATE
         common  # inherits common/include and Boost dependencies
 )
+
+target_compile_definitions(bridge PRIVATE BRIDGE_VERSION="${BRIDGE_VERSION}")
 
 # ── discovery (Executable) ────────────────────────────────────────────────────
 # Service tool: queries myIO servers and generates bridge.json

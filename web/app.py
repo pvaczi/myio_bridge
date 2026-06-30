@@ -21,6 +21,19 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/api/version")
+def version():
+    bridge_bin = os.path.join(BIN_DIR, "bridge")
+    try:
+        result = subprocess.run(
+            [bridge_bin, "--version"],
+            capture_output=True, text=True, timeout=5
+        )
+        return jsonify({"ok": result.returncode == 0, "version": result.stdout.strip()})
+    except Exception as e:
+        return jsonify({"ok": False, "version": "?", "error": str(e)})
+
+
 @app.route("/api/bridge/status")
 def bridge_status():
     result = subprocess.run(
