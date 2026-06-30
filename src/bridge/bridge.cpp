@@ -2,9 +2,12 @@
 #include <log.hpp>
 #include "async_http_client.hpp"
 
+#include <boost/asio/as_tuple.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/json.hpp>
 
 #include <algorithm>
@@ -277,11 +280,13 @@ static std::vector<std::string> split_topic(const std::string& topic) {
 ServerBridge::ServerBridge(config::ServerConfig               cfg,
                             std::string                        topic_prefix,
                             std::shared_ptr<ha::IHAPublisher>  publisher,
-                            std::unique_ptr<myio::IMyIOClient> client)
+                            std::unique_ptr<myio::IMyIOClient> client,
+                            const net::any_io_executor&        ex)
     : cfg_(std::move(cfg))
     , topic_prefix_(std::move(topic_prefix))
     , publisher_(std::move(publisher))
     , client_(std::move(client))
+    , cmd_chan_(ex, 1024)
 {}
 
 std::unordered_set<int> ServerBridge::cover_output_ids() const {
@@ -723,11 +728,12 @@ net::awaitable<void> ServerBridge::poll_loop() {
 // ── Command handler ───────────────────────────────────────────────────────────
 // Only enabled entities receive commands. Disabled entities are silently ignored.
 
-net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
-                                                    const std::string& payload) {
+std::optional<PreparedCommand>
+ServerBridge::prepare_command(const std::string& topic,
+                              const std::string& payload) {
     const auto parts = split_topic(topic);
-    if (parts.size() < 5) co_return;
-    if (parts[1] != cfg_.server_id) co_return;
+    if (parts.size() < 5) return std::nullopt;
+    if (parts[1] != cfg_.server_id) return std::nullopt;
 
     const std::string& entity_type = parts[2];
     const std::string& id_str      = parts[3];
@@ -735,7 +741,7 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
 
     // Cover command
     if (entity_type == "cover") {
-        if (parts[4] != "set") co_return;
+        if (parts[4] != "set") return std::nullopt;
         for (const auto& c : cfg_.covers) {
             if (!c.enabled || c.cover_id != id_str) continue;
             auto ep_on = [](const config::CoverEndpoint& ep) -> std::string {
@@ -752,9 +758,14 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
             if      (cmd == "OPEN")  post = ep_off(c.down) + "&" + ep_on(c.up);
             else if (cmd == "CLOSE") post = ep_off(c.up)   + "&" + ep_on(c.down);
             else if (cmd == "STOP")  post = ep_off(c.up)   + "&" + ep_off(c.down);
-            else co_return;
+            else return std::nullopt;
             myio::log("[{}] [broker to myIO] Cover {} ({}) → {}", cfg_.server_id, c.cover_id, c.name, post);
-            co_await client_->async_send_command(post);
+
+            const config::CoverConfig c_copy = c;
+            PreparedCommand pcmd;
+            pcmd.post = std::move(post);
+            pcmd.publish_state = [this, cmd, c_copy]() -> net::awaitable<void> {
+            const config::CoverConfig& c = c_copy;
 
             // Optimistic state publish + direction tracking.
             // The poll interval (30 s) is longer than most motor runs, so direction
@@ -816,14 +827,16 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
                         }(), net::detached);
                 }
             }
-            co_return;
+                co_return;
+            };
+            return pcmd;
         }
-        co_return;
+        return std::nullopt;
     }
 
     int id = 0;
     if (std::from_chars(id_str.data(), id_str.data() + id_str.size(), id).ec != std::errc{})
-        co_return;
+        return std::nullopt;
 
     // Number value (0–100, passed through to PCA*/fet* as percentage)
     if (entity_type == "number" && parts[4] == "set") {
@@ -837,7 +850,7 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
                 return e.id == id && e.enabled && e.type == config::OutputType::Number;
             });
         const bool is_pwm = (pwm_it != cfg_.pwm.end());
-        if (!is_pca && !is_pwm) co_return;
+        if (!is_pca && !is_pwm) return std::nullopt;
 
         int value = 0;
         std::from_chars(payload.data(), payload.data() + payload.size(), value);
@@ -848,8 +861,9 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
             : std::format("fet*{}={}", id - 100, value);
         const std::string& dev_name = is_pca ? pca_it->name : pwm_it->name;
         myio::log("[{}] [broker to myIO] Number {} ({}) → {}", cfg_.server_id, id, dev_name, post);
-        co_await client_->async_send_command(post);
-        co_return;
+        PreparedCommand pcmd;
+        pcmd.post = post;
+        return pcmd;
     }
 
     // Light brightness
@@ -865,7 +879,7 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
                 return e.id == id && e.enabled && e.type != config::OutputType::Number;
             });
         const bool is_pwm_light = (pwm_it != cfg_.pwm.end());
-        if (!is_pca_light && !is_pwm_light) co_return;
+        if (!is_pca_light && !is_pwm_light) return std::nullopt;
 
         int brightness = 0;
         std::from_chars(payload.data(), payload.data() + payload.size(), brightness);
@@ -876,21 +890,28 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
         myio::log("[{}] [broker to myIO] Light brightness {} ({}) → {} ({}%)",
                   cfg_.server_id, id, dev_name, post,
                   static_cast<int>(std::round(brightness / 255.0 * 100.0)));
-        co_await client_->async_send_command(post);
 
-        // Optimistic state publish — like ON/OFF, don't wait for next poll
-        const std::string on_off = (brightness > 0) ? "ON" : "OFF";
-        co_await publisher_->async_publish(
-            light_state_topic(topic_prefix_, cfg_.server_id, id), on_off, true);
-        co_await publisher_->async_publish(
-            light_bright_topic(topic_prefix_, cfg_.server_id, id),
-            std::to_string(brightness), true);
-        if (is_pca_light) last_pca_state_[id] = brightness;
-        else              last_pwm_state_[id]  = brightness;
-        myio::log("[{}] [bridge to broker] Light brightness {} ({}) → {} ({}%)",
-                  cfg_.server_id, id, dev_name, brightness,
-                  static_cast<int>(std::round(brightness / 255.0 * 100.0)));
-        co_return;
+        const bool        bright_is_pca = is_pca_light;
+        const std::string dev_name_copy = dev_name;
+        PreparedCommand pcmd;
+        pcmd.post = post;
+        pcmd.publish_state =
+            [this, id, brightness, bright_is_pca, dev_name_copy]() -> net::awaitable<void> {
+            // Optimistic state publish — like ON/OFF, don't wait for next poll
+            const std::string on_off = (brightness > 0) ? "ON" : "OFF";
+            co_await publisher_->async_publish(
+                light_state_topic(topic_prefix_, cfg_.server_id, id), on_off, true);
+            co_await publisher_->async_publish(
+                light_bright_topic(topic_prefix_, cfg_.server_id, id),
+                std::to_string(brightness), true);
+            if (bright_is_pca) last_pca_state_[id] = brightness;
+            else               last_pwm_state_[id] = brightness;
+            myio::log("[{}] [bridge to broker] Light brightness {} ({}) → {} ({}%)",
+                      cfg_.server_id, id, dev_name_copy, brightness,
+                      static_cast<int>(std::round(brightness / 255.0 * 100.0)));
+            co_return;
+        };
+        return pcmd;
     }
 
     // Switch / light ON-OFF
@@ -918,29 +939,139 @@ net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
         } else if (is_relay) {
             post = (cmd == "ON") ? std::format("r_ON={}", id) : std::format("r_OFF={}", id);
         } else {
-            co_return;
+            return std::nullopt;
         }
 
         const std::string& dev_name = is_pca ? pca_it->name : (is_relay ? relay_it->name : pwm_it->name);
         myio::log("[{}] [broker to myIO] {} {} ({}) → {}", cfg_.server_id, entity_type, id, dev_name, post);
-        co_await client_->async_send_command(post);
 
-        // Publish optimistic state immediately so HA doesn't revert to the
-        // old retained state while waiting for the next poll cycle.
-        if (is_pca) {
-            const std::string stopic = (pca_it->type == config::OutputType::Light)
-                ? light_state_topic(topic_prefix_, cfg_.server_id, id)
-                : switch_state_topic(topic_prefix_, cfg_.server_id, id);
-            co_await publisher_->async_publish(stopic, cmd, true);
-            myio::log("[{}] [bridge to broker] {} {} ({}) → {}", cfg_.server_id, entity_type, id, pca_it->name, cmd);
-        } else if (is_relay) {
-            co_await publisher_->async_publish(
-                switch_state_topic(topic_prefix_, cfg_.server_id, id), cmd, true);
-            myio::log("[{}] [bridge to broker] {} {} ({}) → {}", cfg_.server_id, entity_type, id, relay_it->name, cmd);
-        } else if (is_pwm) {
-            co_await publisher_->async_publish(
-                light_state_topic(topic_prefix_, cfg_.server_id, id), cmd, true);
-            myio::log("[{}] [bridge to broker] {} {} ({}) → {}", cfg_.server_id, entity_type, id, pwm_it->name, cmd);
+        const std::string        et         = entity_type;
+        const config::OutputType pca_type   = is_pca ? pca_it->type : config::OutputType::Light;
+        const std::string        pca_name   = is_pca   ? pca_it->name   : std::string();
+        const std::string        relay_name = is_relay ? relay_it->name : std::string();
+        const std::string        pwm_name   = is_pwm   ? pwm_it->name   : std::string();
+        PreparedCommand pcmd;
+        pcmd.post = post;
+        pcmd.publish_state =
+            [this, id, cmd, et, is_pca, is_relay, is_pwm, pca_type, pca_name, relay_name, pwm_name]()
+            -> net::awaitable<void> {
+            // Publish optimistic state immediately so HA doesn't revert to the
+            // old retained state while waiting for the next poll cycle.
+            if (is_pca) {
+                const std::string stopic = (pca_type == config::OutputType::Light)
+                    ? light_state_topic(topic_prefix_, cfg_.server_id, id)
+                    : switch_state_topic(topic_prefix_, cfg_.server_id, id);
+                co_await publisher_->async_publish(stopic, cmd, true);
+                myio::log("[{}] [bridge to broker] {} {} ({}) → {}", cfg_.server_id, et, id, pca_name, cmd);
+            } else if (is_relay) {
+                co_await publisher_->async_publish(
+                    switch_state_topic(topic_prefix_, cfg_.server_id, id), cmd, true);
+                myio::log("[{}] [bridge to broker] {} {} ({}) → {}", cfg_.server_id, et, id, relay_name, cmd);
+            } else if (is_pwm) {
+                co_await publisher_->async_publish(
+                    light_state_topic(topic_prefix_, cfg_.server_id, id), cmd, true);
+                myio::log("[{}] [bridge to broker] {} {} ({}) → {}", cfg_.server_id, et, id, pwm_name, cmd);
+            }
+            co_return;
+        };
+        return pcmd;
+    }
+
+    return std::nullopt;
+}
+
+// ── handle_command (single) + batched command worker ─────────────────────────
+
+net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
+                                                   const std::string& payload) {
+    auto pc = prepare_command(topic, payload);
+    if (!pc) co_return;
+    if (!pc->post.empty())
+        co_await client_->async_send_command(pc->post);
+    if (pc->publish_state)
+        co_await pc->publish_state();
+}
+
+net::awaitable<void> ServerBridge::enqueue_if_mine(const std::string& topic,
+                                                   const std::string& payload) {
+    const auto parts = split_topic(topic);
+    if (parts.size() < 2 || parts[1] != cfg_.server_id) co_return;
+    auto [ec] = co_await cmd_chan_.async_send(
+        boost::system::error_code{}, topic, payload,
+        net::as_tuple(net::use_awaitable));
+    if (ec)
+        myio::log(stderr, "[{}] Command enqueue failed: {}",
+                  cfg_.server_id, ec.message());
+}
+
+net::awaitable<void> ServerBridge::process_command_batch(
+    const std::vector<std::pair<std::string, std::string>>& batch) {
+    std::vector<PreparedCommand> prepared;
+    prepared.reserve(batch.size());
+    std::string joined;
+    for (const auto& [topic, payload] : batch) {
+        auto pc = prepare_command(topic, payload);
+        if (!pc) continue;
+        if (!pc->post.empty()) {
+            if (!joined.empty()) joined += '&';
+            joined += pc->post;
+        }
+        prepared.push_back(std::move(*pc));
+    }
+    if (!joined.empty()) {
+        if (prepared.size() > 1)
+            myio::log("[{}] [broker to myIO] batch ({} cmd) → {}",
+                      cfg_.server_id, prepared.size(), joined);
+        co_await client_->async_send_command(joined);
+    }
+    // Publish optimistic state only after the POST returns. If the POST threw,
+    // we never get here (the worker catches it), so HA is not told about a state
+    // change the device never received.
+    for (auto& pc : prepared)
+        if (pc.publish_state)
+            co_await pc.publish_state();
+}
+
+net::awaitable<void> ServerBridge::command_worker() {
+    // After the first queued command, wait briefly so sibling commands from the
+    // same HA action land and go out in a single POST. This is the only tuning
+    // knob; ~60 ms is imperceptible next to a full myIO HTTP round-trip.
+    constexpr auto coalesce_window = std::chrono::milliseconds(60);
+    auto ex = co_await net::this_coro::executor;
+    myio::log("[{}] Command worker started.", cfg_.server_id);
+
+    for (;;) {
+        // Block until the first command arrives.
+        auto [ec, topic, payload] =
+            co_await cmd_chan_.async_receive(net::as_tuple(net::use_awaitable));
+        if (ec) co_return;  // channel closed → shut down
+
+        std::vector<std::pair<std::string, std::string>> batch;
+        batch.emplace_back(std::move(topic), std::move(payload));
+
+        net::steady_timer timer(ex);
+        timer.expires_after(coalesce_window);
+        co_await timer.async_wait(net::use_awaitable);
+
+        // Drain everything currently queued into this batch.
+        for (;;) {
+            std::string t2, p2;
+            const bool got = cmd_chan_.try_receive(
+                [&](boost::system::error_code, std::string tt, std::string pp) {
+                    t2 = std::move(tt);
+                    p2 = std::move(pp);
+                });
+            if (!got) break;
+            batch.emplace_back(std::move(t2), std::move(p2));
+        }
+
+        try {
+            co_await process_command_batch(batch);
+        } catch (const std::exception& e) {
+            myio::log(stderr, "[{}] Command batch error: {}",
+                      cfg_.server_id, myio::short_what(e));
+        } catch (...) {
+            myio::log(stderr, "[{}] Command batch error: unknown", cfg_.server_id);
         }
     }
 }
@@ -966,7 +1097,8 @@ Bridge::Bridge(config::BridgeConfig              cfg,
             srv,
             cfg_.mqtt.topic_prefix,
             publisher_,
-            std::make_unique<myio::AsyncHttpClient>(hcfg)));
+            std::make_unique<myio::AsyncHttpClient>(hcfg),
+            ioc_.get_executor()));
     }
 }
 
@@ -991,6 +1123,19 @@ net::awaitable<void> Bridge::run() {
             });
     }
 
+    for (auto& srv : servers_) {
+        net::co_spawn(ioc_, srv->command_worker(),
+            [sid = srv->server_id()](std::exception_ptr ep) {
+                if (ep) {
+                    try { std::rethrow_exception(ep); }
+                    catch (const std::exception& ex) {
+                        myio::log(stderr, "[{}] Command worker crashed: {}",
+                                  sid, myio::short_what(ex));
+                    }
+                }
+            });
+    }
+
     co_await command_loop();
 }
 
@@ -1009,7 +1154,7 @@ net::awaitable<void> Bridge::command_loop() {
             }
 
             for (auto& srv : servers_)
-                co_await srv->handle_command(topic, payload);
+                co_await srv->enqueue_if_mine(topic, payload);
         } catch (...) {
             caught = std::current_exception();
         }

@@ -7,11 +7,17 @@
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/experimental/concurrent_channel.hpp>
+#include <boost/system/error_code.hpp>
 
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace net = boost::asio;
@@ -55,12 +61,22 @@ std::string make_sensor_discovery(const std::string& prefix, const std::string& 
 
 // ── ServerBridge – manages one myIO server ────────────────────────────────────
 
+// A built-but-not-yet-sent myIO command: the POST fragment plus the follow-up
+// that publishes optimistic state to the broker after the POST succeeds.
+// Splitting build from send lets command_worker coalesce several commands into
+// a single HTTP POST (one TCP round-trip instead of one per command).
+struct PreparedCommand {
+    std::string                           post;          // "" = nothing to send
+    std::function<net::awaitable<void>()> publish_state; // run after the POST
+};
+
 class ServerBridge {
 public:
     ServerBridge(config::ServerConfig                cfg,
                  std::string                         topic_prefix,
                  std::shared_ptr<ha::IHAPublisher>   publisher,
-                 std::unique_ptr<myio::IMyIOClient>  client);
+                 std::unique_ptr<myio::IMyIOClient>  client,
+                 const net::any_io_executor&         ex);
 
     // Publishes HA auto-discovery messages (called once at startup)
     net::awaitable<void> publish_discovery();
@@ -72,6 +88,15 @@ public:
     net::awaitable<void> handle_command(const std::string& topic,
                                          const std::string& payload);
 
+    // Per-server command worker: drains the queue, coalesces commands that arrive
+    // within a short window into a single POST, then publishes state. Spawned once.
+    net::awaitable<void> command_worker();
+
+    // Enqueues a command for processing by command_worker; no-op if the topic
+    // targets another server.
+    net::awaitable<void> enqueue_if_mine(const std::string& topic,
+                                         const std::string& payload);
+
     // Resets last-known states so the next poll republishes everything to the broker.
     // Call after broker reconnect to restore retained state topics.
     void schedule_resync();
@@ -79,6 +104,18 @@ public:
     const std::string& server_id() const { return cfg_.server_id; }
 
 private:
+    using cmd_channel_t = net::experimental::concurrent_channel<
+        void(boost::system::error_code, std::string, std::string)>;
+
+    // Builds a command's POST fragment + state-publish follow-up without sending.
+    // Returns nullopt if the topic is not a known command for this server.
+    std::optional<PreparedCommand> prepare_command(const std::string& topic,
+                                                    const std::string& payload);
+
+    // Sends one coalesced POST for the batch, then runs each follow-up in order.
+    net::awaitable<void> process_command_batch(
+        const std::vector<std::pair<std::string, std::string>>& batch);
+
     // Returns the cover config that owns a given output id (or nullptr)
     const config::CoverConfig* find_cover_by_output(int output_id) const;
 
@@ -104,6 +141,7 @@ private:
     std::string                         topic_prefix_;
     std::shared_ptr<ha::IHAPublisher>   publisher_;
     std::unique_ptr<myio::IMyIOClient>  client_;
+    cmd_channel_t                       cmd_chan_;   // HA→myIO command queue
 
     // Last known states for change detection
     std::unordered_map<int, int>    last_pca_state_;    // id → state (0–255); negative id = cover combined
