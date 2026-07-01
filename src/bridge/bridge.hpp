@@ -11,6 +11,8 @@
 #include <boost/asio/experimental/concurrent_channel.hpp>
 #include <boost/system/error_code.hpp>
 
+#include <chrono>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -84,10 +86,6 @@ public:
     // Periodically polls the server and publishes state changes
     net::awaitable<void> poll_loop();
 
-    // Handles an incoming MQTT command; returns immediately if not for this server
-    net::awaitable<void> handle_command(const std::string& topic,
-                                         const std::string& payload);
-
     // Per-server command worker: drains the queue, coalesces commands that arrive
     // within a short window into a single POST, then publishes state. Spawned once.
     net::awaitable<void> command_worker();
@@ -142,6 +140,14 @@ private:
     std::shared_ptr<ha::IHAPublisher>   publisher_;
     std::unique_ptr<myio::IMyIOClient>  client_;
     cmd_channel_t                       cmd_chan_;   // HA→myIO command queue
+    // Parallel FIFO of enqueue timestamps, one per item currently sitting in
+    // cmd_chan_. Single producer (enqueue_if_mine) / single consumer
+    // (command_worker), pushed/popped in lockstep with the channel, so it stays
+    // aligned without needing to change the channel's completion signature.
+    // Lets command_worker log how long after the first command each coalesced
+    // sibling actually arrived — data to size the coalesce window from, instead
+    // of guessing.
+    std::deque<std::chrono::steady_clock::time_point> cmd_arrival_times_;
 
     // Last known states for change detection
     std::unordered_map<int, int>    last_pca_state_;    // id → state (0–255); negative id = cover combined
@@ -174,6 +180,10 @@ public:
 private:
     // Receives MQTT commands and dispatches to the appropriate ServerBridge
     net::awaitable<void> command_loop();
+
+    // Builds one no-arg coroutine per server that (re)publishes its discovery
+    // config, so callers can fan them out concurrently instead of one at a time.
+    std::vector<std::function<net::awaitable<void>()>> discovery_tasks();
 
     config::BridgeConfig                       cfg_;
     net::io_context&                           ioc_;

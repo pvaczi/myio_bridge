@@ -16,7 +16,6 @@
 #include <format>
 #include <limits>
 #include <ranges>
-#include <stdexcept>
 #include <string>
 
 namespace bridge {
@@ -273,6 +272,44 @@ static std::vector<std::string> split_topic(const std::string& topic) {
     }
     parts.push_back(cur);
     return parts;
+}
+
+// ── Concurrency helper ────────────────────────────────────────────────────────
+// Runs a batch of independent, no-argument coroutines concurrently on the given
+// executor and waits for all of them to finish. Each task's own exceptions are
+// caught so a failing task never leaves the others half-spawned; if one or more
+// threw, the first exception is rethrown once every task has completed.
+// Used to turn "N sequential awaits, each paying a full round-trip" into
+// "N in-flight requests, one round-trip" for independent MQTT publishes.
+static net::awaitable<void> run_concurrently(
+    net::any_io_executor ex,
+    std::vector<std::function<net::awaitable<void>()>> tasks) {
+    if (tasks.empty()) co_return;
+
+    using done_channel_t = net::experimental::concurrent_channel<
+        void(boost::system::error_code, std::exception_ptr)>;
+    done_channel_t done(ex, tasks.size());
+
+    for (auto& task : tasks) {
+        net::co_spawn(ex,
+            [task = std::move(task), &done]() mutable -> net::awaitable<void> {
+                std::exception_ptr ep;
+                try {
+                    co_await task();
+                } catch (...) {
+                    ep = std::current_exception();
+                }
+                co_await done.async_send(boost::system::error_code{}, ep, net::use_awaitable);
+            },
+            net::detached);
+    }
+
+    std::exception_ptr first_error;
+    for (std::size_t i = 0; i < tasks.size(); ++i) {
+        auto [ec, ep] = co_await done.async_receive(net::as_tuple(net::use_awaitable));
+        if (ep && !first_error) first_error = ep;
+    }
+    if (first_error) std::rethrow_exception(first_error);
 }
 
 // ── ServerBridge ──────────────────────────────────────────────────────────────
@@ -586,6 +623,11 @@ net::awaitable<void> ServerBridge::poll_loop() {
         try {
             const auto state = co_await client_->async_poll();
 
+            // Publishes for this cycle are collected here and fired concurrently
+            // at the end, instead of one at a time — matters most right after a
+            // broker reconnect, when every entity resyncs in the same cycle.
+            std::vector<std::function<net::awaitable<void>()>> pending;
+
             for (const auto& pca : state.pca_outputs) {
                 if (cover_ids.contains(pca.id)) {
                     const auto* cover = cover_map.count(pca.id) ? cover_map.at(pca.id) : nullptr;
@@ -608,7 +650,9 @@ net::awaitable<void> ServerBridge::poll_loop() {
                         else if (down_state > 0) last_cover_dir_[key] = -1;
                         last = combined;
                         const int dir = last_cover_dir_.count(key) ? last_cover_dir_.at(key) : 0;
-                        co_await publish_cover_state(*cover, up_state, down_state, dir);
+                        pending.push_back([this, cover, up_state, down_state, dir]() -> net::awaitable<void> {
+                            return publish_cover_state(*cover, up_state, down_state, dir);
+                        });
                     }
                     continue;
                 }
@@ -619,7 +663,9 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 auto& last = last_pca_state_[pca.id];
                 if (last != pca.state) {
                     last = pca.state;
-                    co_await publish_pca_state(pca, *it->second);
+                    pending.push_back([this, pca, cfg = it->second]() -> net::awaitable<void> {
+                        return publish_pca_state(pca, *cfg);
+                    });
                 }
             }
 
@@ -645,7 +691,9 @@ net::awaitable<void> ServerBridge::poll_loop() {
                         else if (down_state > 0) last_cover_dir_[key] = -1;
                         last = combined;
                         const int dir = last_cover_dir_.count(key) ? last_cover_dir_.at(key) : 0;
-                        co_await publish_cover_state(*cover, up_state, down_state, dir);
+                        pending.push_back([this, cover, up_state, down_state, dir]() -> net::awaitable<void> {
+                            return publish_cover_state(*cover, up_state, down_state, dir);
+                        });
                     }
                     continue;
                 }
@@ -655,7 +703,9 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 auto& last = last_relay_state_[relay.id];
                 if (last != static_cast<int>(relay.state)) {
                     last = relay.state ? 1 : 0;
-                    co_await publish_relay_state(relay, *it->second);
+                    pending.push_back([this, relay, cfg = it->second]() -> net::awaitable<void> {
+                        return publish_relay_state(relay, *cfg);
+                    });
                 }
             }
 
@@ -665,7 +715,9 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 auto& last = last_pwm_state_[pwm.id];
                 if (last != pwm.state) {
                     last = pwm.state;
-                    co_await publish_pwm_state(pwm, *it->second);
+                    pending.push_back([this, pwm, cfg = it->second]() -> net::awaitable<void> {
+                        return publish_pwm_state(pwm, *cfg);
+                    });
                 }
             }
 
@@ -696,9 +748,14 @@ net::awaitable<void> ServerBridge::poll_loop() {
                                         (thr <= 0.0 ||
                                          std::abs(last_logged - val) >= thr);
                     if (do_log || syncing_) last_logged = val;
-                    co_await publish_sensor_state(sensor, *it->second, do_log);
+                    pending.push_back([this, sensor, cfg = it->second, do_log]() -> net::awaitable<void> {
+                        return publish_sensor_state(sensor, *cfg, do_log);
+                    });
                 }
             }
+
+            if (!pending.empty())
+                co_await run_concurrently(ex, std::move(pending));
 
         } catch (...) {
             caught = std::current_exception();
@@ -980,28 +1037,21 @@ ServerBridge::prepare_command(const std::string& topic,
     return std::nullopt;
 }
 
-// ── handle_command (single) + batched command worker ─────────────────────────
-
-net::awaitable<void> ServerBridge::handle_command(const std::string& topic,
-                                                   const std::string& payload) {
-    auto pc = prepare_command(topic, payload);
-    if (!pc) co_return;
-    if (!pc->post.empty())
-        co_await client_->async_send_command(pc->post);
-    if (pc->publish_state)
-        co_await pc->publish_state();
-}
+// ── enqueue + batched command worker ──────────────────────────────────────────
 
 net::awaitable<void> ServerBridge::enqueue_if_mine(const std::string& topic,
                                                    const std::string& payload) {
     const auto parts = split_topic(topic);
     if (parts.size() < 2 || parts[1] != cfg_.server_id) co_return;
+    cmd_arrival_times_.push_back(std::chrono::steady_clock::now());
     auto [ec] = co_await cmd_chan_.async_send(
         boost::system::error_code{}, topic, payload,
         net::as_tuple(net::use_awaitable));
-    if (ec)
+    if (ec) {
+        cmd_arrival_times_.pop_back();  // send failed – nothing actually queued
         myio::log(stderr, "[{}] Command enqueue failed: {}",
                   cfg_.server_id, ec.message());
+    }
 }
 
 net::awaitable<void> ServerBridge::process_command_batch(
@@ -1046,6 +1096,10 @@ net::awaitable<void> ServerBridge::command_worker() {
             co_await cmd_chan_.async_receive(net::as_tuple(net::use_awaitable));
         if (ec) co_return;  // channel closed → shut down
 
+        const auto t0 = cmd_arrival_times_.empty()
+            ? std::chrono::steady_clock::now() : cmd_arrival_times_.front();
+        if (!cmd_arrival_times_.empty()) cmd_arrival_times_.pop_front();
+
         std::vector<std::pair<std::string, std::string>> batch;
         batch.emplace_back(std::move(topic), std::move(payload));
 
@@ -1062,8 +1116,24 @@ net::awaitable<void> ServerBridge::command_worker() {
                     p2 = std::move(pp);
                 });
             if (!got) break;
+
+            // Diagnostic: how long after the batch's first command this sibling
+            // actually arrived. Sizes the coalesce window from real HA traffic
+            // instead of a guess — see how close arrivals cluster to 0 ms vs.
+            // how close they cut it to the full window.
+            if (!cmd_arrival_times_.empty()) {
+                const auto gap_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    cmd_arrival_times_.front() - t0).count();
+                cmd_arrival_times_.pop_front();
+                myio::log("[{}] [coalesce] sibling +{}ms after batch start", cfg_.server_id, gap_ms);
+            }
+
             batch.emplace_back(std::move(t2), std::move(p2));
         }
+
+        if (batch.size() > 1)
+            myio::log("[{}] [coalesce] batch closed: {} commands within {}ms window",
+                      cfg_.server_id, batch.size(), coalesce_window.count());
 
         try {
             co_await process_command_batch(batch);
@@ -1102,13 +1172,23 @@ Bridge::Bridge(config::BridgeConfig              cfg,
     }
 }
 
+std::vector<std::function<net::awaitable<void>()>> Bridge::discovery_tasks() {
+    std::vector<std::function<net::awaitable<void>()>> tasks;
+    tasks.reserve(servers_.size());
+    for (auto& srv : servers_)
+        tasks.push_back([s = srv.get()]() -> net::awaitable<void> { return s->publish_discovery(); });
+    return tasks;
+}
+
 net::awaitable<void> Bridge::run() {
     co_await publisher_->async_connect();
     co_await publisher_->async_subscribe(cfg_.mqtt.topic_prefix + "/#");
     co_await publisher_->async_subscribe("homeassistant/status");
 
-    for (auto& srv : servers_)
-        co_await srv->publish_discovery();
+    // All servers' discovery is independent — publish it concurrently instead
+    // of waiting for each server's full discovery (incl. its capability poll)
+    // to finish before starting the next one.
+    co_await run_concurrently(ioc_.get_executor(), discovery_tasks());
 
     for (auto& srv : servers_) {
         net::co_spawn(ioc_, srv->poll_loop(),
@@ -1148,8 +1228,7 @@ net::awaitable<void> Bridge::command_loop() {
 
             if (topic == "homeassistant/status" && payload == "online") {
                 myio::log("[bridge] HA restarted – republishing discovery.");
-                for (auto& srv : servers_)
-                    co_await srv->publish_discovery();
+                co_await run_concurrently(co_await net::this_coro::executor, discovery_tasks());
                 continue;
             }
 
@@ -1170,10 +1249,9 @@ net::awaitable<void> Bridge::command_loop() {
                 co_await publisher_->async_subscribe(cfg_.mqtt.topic_prefix + "/#");
                 co_await publisher_->async_subscribe("homeassistant/status");
                 myio::log("[bridge] Reconnected – republishing discovery and scheduling state resync.");
-                for (auto& srv : servers_) {
-                    co_await srv->publish_discovery();
+                for (auto& srv : servers_)
                     srv->schedule_resync();
-                }
+                co_await run_concurrently(co_await net::this_coro::executor, discovery_tasks());
             } catch (const std::exception& ex) {
                 myio::log(stderr, "[bridge] Reconnect setup error: {}", myio::short_what(ex));
             }
