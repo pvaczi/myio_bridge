@@ -73,7 +73,12 @@ net::awaitable<void> MQTT5Publisher::async_subscribe(std::string_view topic_filt
         std::string(topic_filter),
         mqtt5::subscribe_options{
             mqtt5::qos_e::at_least_once,
-            mqtt5::no_local_e::no,
+            // Without this, the broker echoes the bridge's own retained state
+            // publishes back to itself (same client ID) on this same "myio/#"
+            // subscription — every state publish then takes a pointless round
+            // trip through enqueue_if_mine/command_worker before prepare_command
+            // discards it as a non-"/set" topic.
+            mqtt5::no_local_e::yes,
             mqtt5::retain_as_published_e::retain,
             mqtt5::retain_handling_e::not_send
         }
