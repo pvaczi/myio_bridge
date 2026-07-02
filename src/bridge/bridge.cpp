@@ -1137,9 +1137,14 @@ net::awaitable<void> ServerBridge::command_worker() {
 
         try {
             co_await process_command_batch(batch);
+            const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            myio::log("[{}] [latency] HA→myIO {}ms ({} cmd)", cfg_.server_id, total_ms, batch.size());
         } catch (const std::exception& e) {
-            myio::log(stderr, "[{}] Command batch error: {}",
-                      cfg_.server_id, myio::short_what(e));
+            const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            myio::log(stderr, "[{}] Command batch error after {}ms: {}",
+                      cfg_.server_id, total_ms, myio::short_what(e));
         } catch (...) {
             myio::log(stderr, "[{}] Command batch error: unknown", cfg_.server_id);
         }
