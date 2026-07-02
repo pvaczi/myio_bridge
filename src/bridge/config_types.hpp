@@ -75,6 +75,8 @@ struct ServerConfig {
     int                   poll_interval_sec = 2;
     double                sensor_log_threshold = 0.1;  // min. change to log; 0 = log every publish
     bool                  log_startup_sync     = false; // log entity states during startup/resync
+    int                   coalesce_window_ms   = 5;     // wait after 1st command to batch siblings
+                                                        // into one POST; 0 = no batching
 
     // ALL entries are loaded (enabled and disabled alike) so the bridge
     // can send MQTT undiscovery messages for disabled entries.

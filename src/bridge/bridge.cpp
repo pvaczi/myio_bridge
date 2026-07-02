@@ -1084,9 +1084,11 @@ net::awaitable<void> ServerBridge::process_command_batch(
 
 net::awaitable<void> ServerBridge::command_worker() {
     // After the first queued command, wait briefly so sibling commands from the
-    // same HA action land and go out in a single POST. This is the only tuning
-    // knob; ~60 ms is imperceptible next to a full myIO HTTP round-trip.
-    constexpr auto coalesce_window = std::chrono::milliseconds(60);
+    // same HA action land and go out in a single POST. Configurable per server
+    // via bridge.json "coalesce_window_ms" (default 5 ms); every single command
+    // waits this long, so keep it just above the observed sibling spread.
+    // See README "Command latency & TCP delayed-ACK" for how to size it.
+    const auto coalesce_window = std::chrono::milliseconds(cfg_.coalesce_window_ms);
     auto ex = co_await net::this_coro::executor;
     myio::log("[{}] Command worker started.", cfg_.server_id);
 

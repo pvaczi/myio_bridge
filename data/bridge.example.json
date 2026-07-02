@@ -15,6 +15,7 @@
       "user": "admin",
       "password": "admin",
       "poll_interval_sec": 2,
+      "coalesce_window_ms": 5,
       "pca": [],
       "relays": [],
       "pwm": [],

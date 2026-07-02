@@ -28,6 +28,7 @@ struct InputServer {
     int           poll_interval_sec     = 5;
     double        sensor_log_threshold  = 0.1;
     bool          log_startup_sync      = false;
+    int           coalesce_window_ms    = 5;
 };
 
 struct InputConfig {
@@ -74,6 +75,7 @@ static InputConfig read_input(const std::string& path) {
                 else if (v->is_int64()) is.sensor_log_threshold = static_cast<double>(v->as_int64());
             }
             if (const auto* v = s.if_contains("log_startup_sync"))    if (v->is_bool()) is.log_startup_sync = v->as_bool();
+            if (const auto* v = s.if_contains("coalesce_window_ms"))   is.coalesce_window_ms   = static_cast<int>(v->as_int64());
             if (is.id.empty() || is.host.empty())
                 throw std::runtime_error("Server entry requires 'id' and 'host'");
             cfg.servers.push_back(std::move(is));
@@ -448,6 +450,7 @@ static json::object make_server_entry(const InputServer& is,
     srv["poll_interval_sec"]    = is.poll_interval_sec;
     srv["sensor_log_threshold"] = is.sensor_log_threshold;
     srv["log_startup_sync"]     = is.log_startup_sync;
+    srv["coalesce_window_ms"]   = is.coalesce_window_ms;
 
     // PCA outputs – named only; cover endpoints get "cover_up" / "cover_down" type
     json::array pca_arr;

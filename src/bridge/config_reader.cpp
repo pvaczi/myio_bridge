@@ -86,6 +86,7 @@ static ServerConfig parse_server(const json::object& o) {
     sc.poll_interval_sec     = int_or   (o, "poll_interval_sec",    2);
     sc.sensor_log_threshold  = double_or(o, "sensor_log_threshold", 0.1);
     sc.log_startup_sync      = bool_or  (o, "log_startup_sync",     false);
+    sc.coalesce_window_ms    = int_or   (o, "coalesce_window_ms",   5);
 
     if (sc.server_id.empty() || sc.host.empty())
         throw std::runtime_error("Server entry requires 'id' and 'host'");

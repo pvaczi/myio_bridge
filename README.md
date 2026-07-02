@@ -83,6 +83,15 @@ Open `bridge.json` and configure:
 - Set the MQTT broker connection under `"mqtt"`.
 - For each output, set `"enabled": true` and choose the appropriate `"type"` (see [Entity types](#entity-types) below).
 
+Optional per-server tuning fields (defaults shown; omit to use the default):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `poll_interval_sec` | `2` | How often the server is polled over HTTP. |
+| `sensor_log_threshold` | `0.1` | Minimum sensor change (°C / unit) that gets logged; `0` logs every publish. |
+| `log_startup_sync` | `false` | Log entity states during startup/resync. |
+| `coalesce_window_ms` | `5` | How long to wait after the first command so sibling commands from the same HA action batch into one POST; `0` disables batching. See [Command latency & TCP delayed-ACK](#command-latency--tcp-delayed-ack). |
+
 ```json
 {
   "mqtt": {
@@ -101,6 +110,7 @@ Open `bridge.json` and configure:
       "user": "admin",
       "password": "admin",
       "poll_interval_sec": 2,
+      "coalesce_window_ms": 5,
       "pca": [
         { "id": 2001, "name": "Living room light",   "type": "switch", "enabled": true  },
         { "id": 2002, "name": "Hallway dimmer",       "type": "light",  "enabled": true  },
@@ -259,6 +269,79 @@ All topics are prefixed with `topic_prefix` (default: `myio`).
 All state topics are published with `retain = true`.
 
 Home Assistant auto-discovery messages are published to the standard `homeassistant/` prefix.
+
+## Command latency & TCP delayed-ACK
+
+### The coalesce window
+
+When Home Assistant fires an action that touches several outputs at once (a scene, or an
+automation that turns on two lamps), it publishes several MQTT commands back-to-back. The bridge
+waits `coalesce_window_ms` after the first command so these siblings arrive and go out to the myIO
+device as **one** HTTP POST instead of several. This matters because the myIO Ethernet module
+(W5100) has only 4 TCP sockets — bursts of rapid POSTs can exhaust them and make the web server
+unreachable for ~1 minute.
+
+The window is a trade-off:
+
+- **Every** command waits `coalesce_window_ms` before being sent, so the value is pure latency for
+  the common case of a *single* command (e.g. tilting one blind).
+- If the window is shorter than the spread between sibling commands, a sibling misses the batch and
+  becomes a second POST — not dangerous (two sequential POSTs, not a burst), but that command lands
+  one HTTP round-trip (~0.6–1.5 s) later.
+
+The default is **5 ms**: comfortably above the typical ~1 ms sibling spread on a healthy network,
+while keeping single-command latency negligible. The bridge logs let you size it for your own
+traffic — `[coalesce] sibling +Nms after batch start` shows how far each sibling landed from the
+batch start, and `[coalesce] batch closed: N commands within Wms window` summarises each batch. If
+you see siblings regularly arriving at, say, 8 ms, raise the window for that server; if you never
+batch anything, you can lower it toward `0`.
+
+### Diagnosing a stable ~40 ms sibling gap (TCP delayed-ACK)
+
+If the `[coalesce] sibling +Nms` log shows a **stable ~40 ms** gap (not a jittery few ms), the delay
+is almost certainly **not** in the bridge — it is a classic TCP **Nagle × delayed-ACK** stall on the
+**Home Assistant → MQTT broker** connection, and it will silently force you to keep the coalesce
+window at ≥ 40 ms.
+
+**What happens:** HA's MQTT client (paho) sends the command burst with Nagle's algorithm enabled, so
+it won't put the 2nd/3rd small packet on the wire until the 1st is acknowledged. The broker, as the
+*receiver*, delays that ACK by up to ~40 ms (Linux `TCP_DELACK_MIN`, visible as `ato:40` in
+`ss -ti`). So HA stalls ~40 ms between packets. The effect only appears on an **idle / cold**
+connection — a warm connection (recent traffic) is already in quickack mode and shows a few ms. That
+is why the symptom is most visible at night or after a quiet period. It is *not* the bridge: a
+loopback publish straight into the broker is delivered to the bridge in 0 ms.
+
+**The fix — receiver-side `TCP_QUICKACK`, applied as a route "trick" on the broker host.** Disabling
+Nagle on the sender (HA) or setting `set_tcp_nodelay` on the broker does **not** help — those are the
+wrong (sender-side) knob. The reliable fix is to make the **broker** ACK immediately, by setting
+`quickack 1` on the route the broker uses to reach HA:
+
+```bash
+# On the broker host, for the subnet that contains Home Assistant.
+# Adjust the network / dev / src to match `ip route`.
+ip route change 10.0.0.0/16 dev eth0 proto kernel scope link src <broker-ip> quickack 1
+```
+
+Verify with the bridge log: the next idle-connection multi-command action should show
+`[coalesce] sibling +1ms` instead of `+40ms`. (Note: `ss` still reports `ato:40` — that field is the
+delayed-ACK *constant*, not proof that quickack is off; the real proof is the measured sibling gap.)
+
+Make it persistent (survives reboot) by adding a `post-up` hook to the broker's interface, e.g. in
+`/etc/network/interfaces` (ifupdown):
+
+```
+iface eth0 inet static
+	address <broker-ip>/16
+	gateway <gw>
+	post-up ip route replace 10.0.0.0/16 dev eth0 proto kernel scope link src <broker-ip> quickack 1
+```
+
+**Caveat — you need `NET_ADMIN`.** The route trick requires the `CAP_NET_ADMIN` capability. It works
+on a normal host, a VM, or a container that has the full capability set. On a **locked-down or
+capability-restricted container** the `ip route change` may appear to succeed but not take effect
+(the sibling gap stays ~40 ms). This is the main reason to run the broker somewhere you control the
+network stack — a dedicated LXC/VM rather than an appliance that hides it (e.g. a closed
+Home-Assistant-OS add-on). Once the stall is gone, you can safely lower `coalesce_window_ms`.
 
 ## Deploying to Linux (LXC / VM)
 
