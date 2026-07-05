@@ -21,7 +21,7 @@ fi
 # --- deps ---
 info "Függőségek telepítése..."
 apt-get update -qq
-apt-get install -y -qq curl python3-venv
+apt-get install -y -qq curl git python3-venv
 ok "Függőségek kész."
 
 # --- user ---
@@ -53,10 +53,20 @@ cp -r "$SCRIPT_DIR/web" "$INSTALL_DIR/"
 if [[ ! -d "$INSTALL_DIR/venv" ]]; then
     python3 -m venv "$INSTALL_DIR/venv"
 fi
-"$INSTALL_DIR/venv/bin/pip" install -q flask
+"$INSTALL_DIR/venv/bin/pip" install -q -r "$INSTALL_DIR/web/requirements.txt"
 ok "Web UI kész."
 
+# --- Web UI jelszó (basic auth) ---
+if [[ ! -f "$INSTALL_DIR/data/webui_password" ]]; then
+    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 20 > "$INSTALL_DIR/data/webui_password"
+    chmod 600 "$INSTALL_DIR/data/webui_password"
+    ok "Web UI jelszó generálva: $INSTALL_DIR/data/webui_password"
+else
+    info "Web UI jelszó már létezik, megtartva."
+fi
+
 # --- config fájlok (csak ha még nincs) ---
+# A bridge.json plaintext myIO jelszavakat tartalmaz → csak a myio user olvashassa.
 for f in bridge.json discovery_input.json; do
     src="$SCRIPT_DIR/data/$f"
     dst="$INSTALL_DIR/data/$f"
@@ -66,6 +76,7 @@ for f in bridge.json discovery_input.json; do
     elif [[ -f "$dst" ]]; then
         info "Config már létezik, megtartva: $f"
     fi
+    [[ -f "$dst" ]] && chmod 600 "$dst"
 done
 
 # --- systemd service-ek ---
@@ -87,16 +98,25 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=myio-web
+# NoNewPrivileges itt NEM lehet: a UI sudo systemctl-lel indítja/állítja a bridge-et.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 # --- sudoers ---
-cat > /etc/sudoers.d/myio << 'EOF'
+# visudo -cf validálja a snippetet, mielőtt élesbe kerül — egy szintaktikailag
+# hibás sudoers.d fájl az egész sudo-t eltörheti.
+SUDOERS_TMP=$(mktemp)
+cat > "$SUDOERS_TMP" << 'EOF'
 myio ALL=(ALL) NOPASSWD: /bin/systemctl start myio-bridge, /bin/systemctl stop myio-bridge, /bin/systemctl restart myio-bridge
 EOF
-chmod 440 /etc/sudoers.d/myio
+visudo -cf "$SUDOERS_TMP" >/dev/null || { rm -f "$SUDOERS_TMP"; error "A sudoers snippet érvénytelen."; }
+install -m 440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/myio
+rm -f "$SUDOERS_TMP"
 ok "Sudoers kész."
 
 # --- ownership ---
@@ -120,6 +140,7 @@ echo
 echo "================================================"
 echo " Telepítés kész!"
 echo " Web UI: http://$(hostname -I | awk '{print $1}'):8080"
+echo " Web UI belépés: admin / $(cat "$INSTALL_DIR/data/webui_password")"
 echo "================================================"
 echo
 systemctl status myio-bridge myio-web --no-pager

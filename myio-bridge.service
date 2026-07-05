@@ -12,6 +12,14 @@ RestartSec=10
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=myio-bridge
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/myio-bridge/data
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
 
 [Install]
 WantedBy=multi-user.target
