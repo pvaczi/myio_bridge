@@ -3,6 +3,9 @@ cmake_minimum_required(VERSION 3.25)
 # CMP0167: FindBoost module removed in CMake 4.x — use BoostConfig.cmake instead
 cmake_policy(SET CMP0167 NEW)
 
+# NOTE: the project VERSION below is a fixed placeholder (like vcpkg.json's
+# version-string) — the real release version is the git tag, injected by CI
+# as BRIDGE_VERSION and reported by `bridge --version`.
 project(myIO_bridge
     VERSION 1.0.0
     DESCRIPTION "myIO <-> Home Assistant MQTT bridge"

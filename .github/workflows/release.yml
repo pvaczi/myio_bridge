@@ -49,6 +49,11 @@ jobs:
       - name: Build
         run: ninja -C build
 
+      - name: Smoke test
+        run: |
+          build/bridge --version
+          test "$(build/bridge --version)" = "myIO bridge ${{ github.ref_name }}"
+
       - name: Strip and package
         run: |
           strip build/bridge build/discovery
