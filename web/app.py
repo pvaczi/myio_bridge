@@ -1,8 +1,11 @@
+import hmac
 import json
 import os
 import re
 import subprocess
-from flask import Flask, jsonify, render_template, request
+import tempfile
+from functools import wraps
+from flask import Flask, Response, jsonify, render_template, request
 
 _JOURNAL_LINE = re.compile(r'^(\S+)\s+\S+\s+\S+:\s+(.*)')
 _OWN_TS = re.compile(r'^\[?\d{4}-\d{2}-\d{2}')
@@ -14,6 +17,33 @@ BIN_DIR = os.environ.get("MYIO_BIN_DIR", "/opt/myio-bridge/bin")
 
 BRIDGE_JSON = os.path.join(DATA_DIR, "bridge.json")
 DISCOVERY_JSON = os.path.join(DATA_DIR, "discovery_input.json")
+PASSWORD_FILE = os.path.join(DATA_DIR, "webui_password")
+
+
+def _load_password():
+    """The install script generates this file (chmod 600). If it is missing,
+    the UI runs unauthenticated — matching the pre-auth behaviour so a manual
+    install without the file does not lock the user out."""
+    try:
+        with open(PASSWORD_FILE) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+_PASSWORD = _load_password()
+
+
+@app.before_request
+def _require_auth():
+    if _PASSWORD is None:
+        return None
+    auth = request.authorization
+    if auth and auth.username == "admin" and \
+            hmac.compare_digest(auth.password or "", _PASSWORD):
+        return None
+    return Response("Authentication required", 401,
+                    {"WWW-Authenticate": 'Basic realm="myIO bridge"'})
 
 
 @app.route("/")
@@ -123,15 +153,59 @@ def bridge_log():
     return jsonify({"ok": True, "lines": "\n".join(lines)})
 
 
+def _validate_bridge_config(cfg):
+    """Server-side sanity checks so a bad value cannot brick the bridge on its
+    next restart. Mirrors what config_reader.cpp would reject or misbehave on."""
+    if not isinstance(cfg, dict):
+        return "a gyökér nem objektum"
+    mqtt = cfg.get("mqtt")
+    if not isinstance(mqtt, dict):
+        return "hiányzó 'mqtt' szekció"
+    port = mqtt.get("port", 1883)
+    if not isinstance(port, int) or not (1 <= port <= 65535):
+        return f"érvénytelen mqtt.port: {port!r}"
+    servers = cfg.get("servers")
+    if not isinstance(servers, list) or not servers:
+        return "hiányzó vagy üres 'servers' lista"
+    for i, srv in enumerate(servers):
+        if not isinstance(srv, dict):
+            return f"servers[{i}] nem objektum"
+        if not srv.get("id") or not srv.get("host"):
+            return f"servers[{i}]: 'id' és 'host' kötelező"
+        for key, lo, hi in (("port", 1, 65535),
+                            ("poll_interval_sec", 1, 3600),
+                            ("coalesce_window_ms", 0, 10000)):
+            if key in srv:
+                v = srv[key]
+                if not isinstance(v, int) or not (lo <= v <= hi):
+                    return f"servers[{i}].{key}: {v!r} (megengedett: {lo}–{hi})"
+    return None
+
+
 def _save_config(path):
     content = request.get_data(as_text=True)
     try:
-        json.loads(content)
+        parsed = json.loads(content)
     except (json.JSONDecodeError, ValueError) as e:
         return jsonify({"ok": False, "error": str(e)}), 400
+    if path == BRIDGE_JSON:
+        err = _validate_bridge_config(parsed)
+        if err:
+            return jsonify({"ok": False, "error": f"Érvénytelen konfig: {err}"}), 400
     try:
-        with open(path, "w") as f:
-            f.write(content)
+        # Atomic write: an interrupted save must never leave a truncated config
+        # behind — the bridge would fail to start on it.
+        fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, path)
+        except BaseException:
+            os.unlink(tmp_path)
+            raise
         return jsonify({"ok": True})
     except OSError as e:
         return jsonify({"ok": False, "error": str(e)}), 500

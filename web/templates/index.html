@@ -348,7 +348,7 @@ function veCoverTypeChanged(typeSelect, dir) {
   const ids     = new Set(devices.map(d => d.id));
   let opts = '';
   if (cur > 0 && !ids.has(cur)) opts += `<option value="${cur}" selected>${cur} — ?</option>`;
-  devices.forEach(d => { opts += `<option value="${d.id}"${d.id == cur ? ' selected' : ''}>${d.id} — ${d.name ?? ''}</option>`; });
+  devices.forEach(d => { opts += `<option value="${d.id}"${d.id == cur ? ' selected' : ''}>${d.id} — ${esc(d.name ?? '')}</option>`; });
   idSel.innerHTML = opts || `<option value="0">—</option>`;
 }
 
