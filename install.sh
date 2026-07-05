@@ -56,13 +56,16 @@ fi
 "$INSTALL_DIR/venv/bin/pip" install -q -r "$INSTALL_DIR/web/requirements.txt"
 ok "Web UI kész."
 
-# --- Web UI jelszó (basic auth) ---
+# --- Web UI belépés (basic auth, "felhasználó:jelszó" formátum) ---
+# A felhasználónév is véletlenszerű — a fix "admin" szótár-támadások célpontja.
 if [[ ! -f "$INSTALL_DIR/data/webui_password" ]]; then
-    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 20 > "$INSTALL_DIR/data/webui_password"
+    WEBUI_USER="myio-$(tr -dc 'a-z0-9' < /dev/urandom | head -c 6)"
+    WEBUI_PASS="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 20)"
+    printf '%s:%s\n' "$WEBUI_USER" "$WEBUI_PASS" > "$INSTALL_DIR/data/webui_password"
     chmod 600 "$INSTALL_DIR/data/webui_password"
-    ok "Web UI jelszó generálva: $INSTALL_DIR/data/webui_password"
+    ok "Web UI belépés generálva: $INSTALL_DIR/data/webui_password"
 else
-    info "Web UI jelszó már létezik, megtartva."
+    info "Web UI belépés már létezik, megtartva."
 fi
 
 # --- config fájlok (csak ha még nincs) ---
@@ -140,7 +143,7 @@ echo
 echo "================================================"
 echo " Telepítés kész!"
 echo " Web UI: http://$(hostname -I | awk '{print $1}'):8080"
-echo " Web UI belépés: admin / $(cat "$INSTALL_DIR/data/webui_password")"
+echo " Web UI belépés (felhasználó:jelszó): $(cat "$INSTALL_DIR/data/webui_password")"
 echo "================================================"
 echo
 systemctl status myio-bridge myio-web --no-pager

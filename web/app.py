@@ -20,27 +20,38 @@ DISCOVERY_JSON = os.path.join(DATA_DIR, "discovery_input.json")
 PASSWORD_FILE = os.path.join(DATA_DIR, "webui_password")
 
 
-def _load_password():
-    """The install script generates this file (chmod 600). If it is missing,
-    the UI runs unauthenticated — matching the pre-auth behaviour so a manual
-    install without the file does not lock the user out."""
+def _load_credentials():
+    """The install script generates this file (chmod 600, owner myio) in
+    "username:password" format. A line without a colon is treated as a bare
+    password with the legacy username "admin". If the file is missing or
+    unreadable, the UI runs unauthenticated — matching the pre-auth behaviour
+    so a manual install without the file does not lock the user out."""
     try:
         with open(PASSWORD_FILE) as f:
-            return f.read().strip() or None
+            line = f.read().strip()
     except OSError:
         return None
+    if not line:
+        return None
+    user, sep, password = line.partition(":")
+    if not sep:
+        return ("admin", line)
+    if not user or not password:
+        return None
+    return (user, password)
 
 
-_PASSWORD = _load_password()
+_CREDENTIALS = _load_credentials()
 
 
 @app.before_request
 def _require_auth():
-    if _PASSWORD is None:
+    if _CREDENTIALS is None:
         return None
     auth = request.authorization
-    if auth and auth.username == "admin" and \
-            hmac.compare_digest(auth.password or "", _PASSWORD):
+    if auth and \
+            hmac.compare_digest(auth.username or "", _CREDENTIALS[0]) and \
+            hmac.compare_digest(auth.password or "", _CREDENTIALS[1]):
         return None
     return Response("Authentication required", 401,
                     {"WWW-Authenticate": 'Basic realm="myIO bridge"'})
