@@ -83,7 +83,7 @@ static ServerConfig parse_server(const json::object& o) {
     sc.port              = static_cast<std::uint16_t>(int_or(o, "port", 80));
     sc.user              = str_or(o, "user",     "admin");
     sc.password          = str_or(o, "password", "admin");
-    sc.poll_interval_sec     = int_or   (o, "poll_interval_sec",    2);
+    sc.poll_interval_sec     = int_or   (o, "poll_interval_sec",    5);
     sc.sensor_log_threshold  = double_or(o, "sensor_log_threshold", 0.1);
     sc.log_startup_sync      = bool_or  (o, "log_startup_sync",     false);
     sc.coalesce_window_ms    = int_or   (o, "coalesce_window_ms",   5);

@@ -4,7 +4,9 @@
 #include <http_client.hpp>
 #include <types.hpp>
 
+#include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/experimental/channel.hpp>
 #include <string>
 #include <string_view>
 
@@ -18,7 +20,10 @@ namespace myio {
 // non-standard HTTP headers.
 class AsyncHttpClient final : public IMyIOClient {
 public:
-    explicit AsyncHttpClient(HttpConfig cfg);
+    AsyncHttpClient(HttpConfig cfg, const net::any_io_executor& ex);
+
+    // 1-capacity channel used as an async mutex (send = lock, receive = unlock).
+    using gate_t = net::experimental::channel<void(boost::system::error_code)>;
 
     // GET /info.json → returns server metadata (called once at startup)
     [[nodiscard]]
@@ -39,7 +44,14 @@ private:
     net::awaitable<void> do_post(std::string_view target,
                                   std::string_view body);
 
+    // Suspends until this client holds its device gate. The myIO device (W5100,
+    // 4 sockets, single-threaded server loop) must only ever see one bridge
+    // connection at a time — a poll GET and a command POST on two parallel
+    // sockets would pin two device sockets for up to a full timeout each.
+    net::awaitable<void> lock_gate();
+
     HttpConfig cfg_;
+    gate_t     gate_;
 };
 
 } // namespace myio

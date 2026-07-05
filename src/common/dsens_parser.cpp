@@ -3,6 +3,7 @@
 #include <boost/json.hpp>
 
 #include <algorithm>
+#include <optional>
 #include <ranges>
 #include <stdexcept>
 #include <string>
@@ -33,6 +34,19 @@ static bool bool_flag(const json::object& o, std::string_view key) {
     return int_or(o, key) != 0;
 }
 
+// JSON keys arriving from the firmware are expected to be small non-negative
+// integers; anything else (metadata key, corrupt response) must not abort the
+// whole parse with an uncaught std::stoi exception.
+static std::optional<int> key_to_int(std::string_view key) {
+    if (key.empty() || key.size() > 9) return std::nullopt;
+    int value = 0;
+    for (const char c : key) {
+        if (c < '0' || c > '9') return std::nullopt;
+        value = value * 10 + (c - '0');
+    }
+    return value;
+}
+
 static std::string trim(std::string s) {
     auto not_space = [](unsigned char c) { return !std::isspace(c); };
     s.erase(s.begin(), std::ranges::find_if(s, not_space));
@@ -47,8 +61,11 @@ static void parse_relays(const json::object& obj, ServerState& state) {
         const auto* entry = val.if_object();
         if (!entry) continue;
 
+        const auto idx = key_to_int(key);
+        if (!idx) continue;
+
         RelayOutput r;
-        r.index             = std::stoi(std::string(key));
+        r.index             = *idx;
         r.id                = int_or(*entry, "id", r.index + 1);
         r.name              = trim(str_or(*entry, "description"));
         r.state             = int_or(*entry, "state") != 0;
@@ -66,8 +83,11 @@ static void parse_pca(const json::object& obj, ServerState& state) {
         const auto* entry = val.if_object();
         if (!entry) continue;
 
+        const auto idx = key_to_int(key);
+        if (!idx) continue;
+
         PcaOutput p;
-        p.index             = std::stoi(std::string(key));
+        p.index             = *idx;
         p.id                = int_or(*entry, "id", 2001 + p.index);
         p.name              = trim(str_or(*entry, "description"));
         p.state             = int_or(*entry, "state");
@@ -89,8 +109,11 @@ static void parse_pwm(const json::object& obj, ServerState& state) {
         const auto* entry = val.if_object();
         if (!entry) continue;
 
+        const auto idx = key_to_int(key);
+        if (!idx) continue;
+
         PwmOutput p;
-        p.index             = std::stoi(std::string(key));
+        p.index             = *idx;
         p.id                = int_or(*entry, "id", 101 + p.index);
         p.name              = trim(str_or(*entry, "description"));
         p.state             = int_or(*entry, "state");
@@ -111,7 +134,13 @@ static void parse_sensors(const json::object& obj, ServerState& state) {
         if (!entry) continue;
 
         Sensor s;
-        s.id   = int_or(*entry, "id", std::stoi(std::string(key)));
+        s.id = int_or(*entry, "id", 0);
+        if (s.id == 0) {
+            // Fall back to the JSON key, evaluated lazily — sensor ids are ≥ 1.
+            const auto k = key_to_int(key);
+            if (!k) continue;
+            s.id = *k;
+        }
         s.name = trim(str_or(*entry, "description"));
 
         if (s.id >= 1 && s.id <= 100) {
@@ -176,8 +205,11 @@ static void parse_protection(const json::object& obj, ServerState& state) {
         const auto* entry = val.if_object();
         if (!entry) continue;
 
+        const auto idx = key_to_int(key);
+        if (!idx) continue;
+
         ProtectionPair p;
-        p.index         = std::stoi(std::string(key));
+        p.index         = *idx;
         p.element0      = int_or(*entry, "element0");
         p.element1      = int_or(*entry, "element1");
         p.element0_name = trim(str_or(*entry, "element0d"));
@@ -194,8 +226,11 @@ static void parse_joiners(const json::object& obj, ServerState& state) {
         const auto* entry = val.if_object();
         if (!entry) continue;
 
+        const auto idx = key_to_int(key);
+        if (!idx) continue;
+
         JoinerPair j;
-        j.index         = std::stoi(std::string(key));
+        j.index         = *idx;
         j.element0      = int_or(*entry, "element0");
         j.element1      = int_or(*entry, "element1");
         j.element0_name = trim(str_or(*entry, "element0d"));

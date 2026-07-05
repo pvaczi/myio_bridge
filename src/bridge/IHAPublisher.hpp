@@ -1,6 +1,7 @@
 #pragma once
 
 #include <boost/asio/awaitable.hpp>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -8,6 +9,14 @@
 namespace net = boost::asio;
 
 namespace ha {
+
+// Thrown by async_receive when the client reconnected but the broker did not
+// keep the session (e.g. broker restart): all subscriptions are gone and must
+// be reinstated immediately — unlike a generic receive error, no backoff is
+// needed, the connection itself is already up again.
+struct SessionExpired : std::runtime_error {
+    SessionExpired() : std::runtime_error("MQTT session expired on reconnect") {}
+};
 
 // ── Home Automation publisher interface (async) ───────────────────────────────
 // Currently implemented with Boost.MQTT5.

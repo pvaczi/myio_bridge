@@ -3,6 +3,7 @@
 
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/mqtt5/error.hpp>
 #include <boost/mqtt5/types.hpp>
 
 #include <format>
@@ -104,6 +105,12 @@ net::awaitable<std::tuple<std::string, std::string>> MQTT5Publisher::async_recei
     // async_receive returns (error_code, topic, payload, publish_props)
     auto [ec, topic, payload, props] =
         co_await client_.async_receive(net::as_tuple(net::use_awaitable));
+
+    // The client reconnected but the broker lost the session (broker restart):
+    // every subscription is gone. Signal it distinctly so the command loop can
+    // re-subscribe immediately instead of applying the generic error backoff.
+    if (ec == mqtt5::client::error::session_expired)
+        throw SessionExpired{};
 
     if (ec)
         throw std::runtime_error(

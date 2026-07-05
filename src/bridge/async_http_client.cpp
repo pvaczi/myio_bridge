@@ -67,7 +67,25 @@ static std::string extract_json(const std::string& raw, std::string_view host) {
 
 // ── Constructor ───────────────────────────────────────────────────────────────
 
-AsyncHttpClient::AsyncHttpClient(HttpConfig cfg) : cfg_(std::move(cfg)) {}
+AsyncHttpClient::AsyncHttpClient(HttpConfig cfg, const net::any_io_executor& ex)
+    : cfg_(std::move(cfg))
+    , gate_(ex, 1)
+{}
+
+// ── Device gate (async mutex) ─────────────────────────────────────────────────
+
+namespace {
+// Releases the gate when the owning coroutine frame is destroyed, so the lock
+// is dropped on every path — normal return and exception alike.
+struct GateUnlock {
+    AsyncHttpClient::gate_t& ch;
+    ~GateUnlock() { ch.try_receive([](boost::system::error_code) {}); }
+};
+} // namespace
+
+net::awaitable<void> AsyncHttpClient::lock_gate() {
+    co_await gate_.async_send(boost::system::error_code{}, net::use_awaitable);
+}
 
 // ── Internal GET ──────────────────────────────────────────────────────────────
 
@@ -155,6 +173,8 @@ net::awaitable<void> AsyncHttpClient::do_post(std::string_view target,
 
 net::awaitable<ServerInfo> AsyncHttpClient::async_get_info() {
     namespace json = boost::json;
+    co_await lock_gate();
+    GateUnlock unlock{gate_};
     const auto body = co_await do_get("/info.json");
     const auto  doc = json::parse(body);
     const auto& obj = doc.as_object().at("info").as_object();
@@ -188,6 +208,8 @@ net::awaitable<ServerInfo> AsyncHttpClient::async_get_info() {
 }
 
 net::awaitable<ServerState> AsyncHttpClient::async_poll() {
+    co_await lock_gate();
+    GateUnlock unlock{gate_};
     const auto json_body = co_await do_get("/sens_out.json");
     co_return DSensOutParser::parse(json_body, cfg_.server_id);
 }
@@ -197,6 +219,11 @@ net::awaitable<void> AsyncHttpClient::async_send_command(std::string post_body) 
     // Delay uses an async timer so the coroutine yield doesn't block the io_context.
     constexpr int   max_attempts   = 3;
     constexpr auto  retry_delay    = std::chrono::milliseconds(500);
+
+    // Hold the device gate across the retries too — a retry is still traffic
+    // to the same single-connection device.
+    co_await lock_gate();
+    GateUnlock unlock{gate_};
 
     for (int attempt = 1; attempt <= max_attempts; ++attempt) {
         bool retry = false;

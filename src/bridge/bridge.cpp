@@ -618,6 +618,10 @@ net::awaitable<void> ServerBridge::poll_loop() {
     for (const auto& [id, _] : sensor_map) last_sensor_val_[id]  = std::numeric_limits<double>::max();
     syncing_ = true;
 
+    // While the device is unreachable (e.g. the multi-minute W5100 lockup),
+    // probing it at the normal rate only ties up its sockets — back off instead.
+    int consecutive_errors = 0;
+
     while (true) {
         std::exception_ptr caught;
         try {
@@ -728,6 +732,9 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 if      (sensor.temperature) val = *sensor.temperature;
                 else if (sensor.humidity)    val = *sensor.humidity;
                 else if (sensor.power)       val = *sensor.power;
+                else if (sensor.voltage)     val = *sensor.voltage;
+                else if (sensor.current)     val = *sensor.current;
+                else if (sensor.energy)      val = *sensor.energy;
                 else {
                     auto& last = last_sensor_val_[sensor.id];
                     if (last != std::numeric_limits<double>::max()) {
@@ -760,24 +767,33 @@ net::awaitable<void> ServerBridge::poll_loop() {
         } catch (...) {
             caught = std::current_exception();
         }
+        auto delay = std::chrono::seconds(cfg_.poll_interval_sec);
         if (caught) {
+            ++consecutive_errors;
+            const int shift = std::min(consecutive_errors, 4);
+            delay = std::min(delay * (1 << shift), std::chrono::seconds(120));
             try { std::rethrow_exception(caught); }
             catch (const std::exception& ex) {
                 std::string msg = myio::short_what(ex);
                 if (msg == last_poll_error_) {
-                    myio::log(stderr, "[{}] Poll error: (same as previous)", cfg_.server_id);
+                    myio::log(stderr, "[{}] Poll error: (same as previous, retry in {}s)",
+                              cfg_.server_id, delay.count());
                 } else {
                     last_poll_error_ = msg;
                     myio::log(stderr, "[{}] Poll error: {}", cfg_.server_id, msg);
                 }
             }
         } else {
+            if (consecutive_errors > 0)
+                myio::log("[{}] Poll recovered after {} failed attempt(s).",
+                          cfg_.server_id, consecutive_errors);
+            consecutive_errors = 0;
             last_poll_error_.clear();
             syncing_ = false;
         }
 
         net::steady_timer timer(ex);
-        timer.expires_after(std::chrono::seconds(cfg_.poll_interval_sec));
+        timer.expires_after(delay);
         co_await timer.async_wait(net::use_awaitable);
     }
 }
@@ -827,18 +843,23 @@ ServerBridge::prepare_command(const std::string& topic,
             // Optimistic state publish + direction tracking.
             // The poll interval (30 s) is longer than most motor runs, so direction
             // and state must be set from the command, not from polling.
+            // The poll stores covers as combined = up_state*1000 + down_state.
+            // For relays the on-value is exactly 1, so the optimistic value can
+            // match what the next poll computes (no duplicate republish). PCA
+            // on-values are 0–255 and unknown here → use the -1 sentinel, which
+            // just forces a (harmless) republish on the next poll.
             const int key = -(c.up.id);
             if (cmd == "OPEN") {
                 last_cover_dir_[key] = +1;
-                if (c.up.output_type == "relay") last_relay_state_[key] = 1;
-                else                             last_pca_state_[key]   = 1;
+                if (c.up.output_type == "relay") last_relay_state_[key] = 1000;
+                else                             last_pca_state_[key]   = -1;
                 co_await publisher_->async_publish(
                     cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), "opening", true);
                 myio::log("[{}] [bridge to broker] Cover {} ({}) → opening", cfg_.server_id, c.cover_id, c.name);
             } else if (cmd == "CLOSE") {
                 last_cover_dir_[key] = -1;
                 if (c.up.output_type == "relay") last_relay_state_[key] = 1;
-                else                             last_pca_state_[key]   = 1;
+                else                             last_pca_state_[key]   = -1;
                 co_await publisher_->async_publish(
                     cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), "closing", true);
                 myio::log("[{}] [bridge to broker] Cover {} ({}) → closing", cfg_.server_id, c.cover_id, c.name);
@@ -860,6 +881,12 @@ ServerBridge::prepare_command(const std::string& topic,
             if (cmd == "OPEN" || cmd == "CLOSE") {
                 if (c.motor_timeout_sec > 0) {
                     const int end_pos = (cmd == "OPEN") ? 100 : 0;
+                    // Supersede the previous motor-timeout timer: without this a
+                    // rapid second OPEN/CLOSE leaves the first timer live, and it
+                    // would publish a premature "stopped" mid-movement.
+                    if (const auto it = last_cover_cancel_.find(key);
+                        it != last_cover_cancel_.end() && it->second)
+                        *it->second = true;
                     auto flag = std::make_shared<bool>(false);
                     last_cover_cancel_[key] = flag;
                     net::co_spawn(co_await net::this_coro::executor,
@@ -1174,7 +1201,7 @@ Bridge::Bridge(config::BridgeConfig              cfg,
             srv,
             cfg_.mqtt.topic_prefix,
             publisher_,
-            std::make_unique<myio::AsyncHttpClient>(hcfg),
+            std::make_unique<myio::AsyncHttpClient>(hcfg, ioc_.get_executor()),
             ioc_.get_executor()));
     }
 }
@@ -1230,6 +1257,7 @@ net::awaitable<void> Bridge::command_loop() {
     myio::log("[bridge] Command loop started.");
     while (true) {
         std::exception_ptr caught;
+        bool session_expired = false;
         try {
             auto [topic, payload] = co_await publisher_->async_receive();
 
@@ -1241,17 +1269,26 @@ net::awaitable<void> Bridge::command_loop() {
 
             for (auto& srv : servers_)
                 co_await srv->enqueue_if_mine(topic, payload);
+        } catch (const ha::SessionExpired&) {
+            // Broker restarted without keeping the session: the connection is
+            // already re-established, only the subscriptions are gone. Restore
+            // them immediately — every second of delay is a deaf command channel.
+            session_expired = true;
         } catch (...) {
             caught = std::current_exception();
         }
-        if (caught) {
-            try { std::rethrow_exception(caught); }
-            catch (const std::exception& ex) {
-                myio::log(stderr, "[bridge] Command loop error: {}", myio::short_what(ex));
+        if (caught || session_expired) {
+            if (session_expired) {
+                myio::log("[bridge] MQTT session expired – restoring subscriptions.");
+            } else {
+                try { std::rethrow_exception(caught); }
+                catch (const std::exception& ex) {
+                    myio::log(stderr, "[bridge] Command loop error: {}", myio::short_what(ex));
+                }
+                net::steady_timer t(co_await net::this_coro::executor);
+                t.expires_after(30s);
+                co_await t.async_wait(net::use_awaitable);
             }
-            net::steady_timer t(co_await net::this_coro::executor);
-            t.expires_after(30s);
-            co_await t.async_wait(net::use_awaitable);
             try {
                 co_await publisher_->async_subscribe(cfg_.mqtt.topic_prefix + "/#");
                 co_await publisher_->async_subscribe("homeassistant/status");

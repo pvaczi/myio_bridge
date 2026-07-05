@@ -46,9 +46,10 @@ static std::string fetch_raw_response(const HttpConfig& cfg, std::string_view ta
 
     // Raw socket read – bypasses the Beast HTTP parser because the myIO server
     // sends a non-standard HTTP header (missing CRLF or bad reason phrase).
+    // Capped so a misbehaving firmware cannot grow the buffer unbounded.
     std::string raw;
     beast::error_code ec;
-    net::read(stream, net::dynamic_buffer(raw), ec);
+    net::read(stream, net::dynamic_buffer(raw, 256 * 1024), ec);
 
     if (ec && ec != net::error::eof && ec != http::error::end_of_stream)
         throw beast::system_error{ec};
@@ -59,17 +60,40 @@ static std::string fetch_raw_response(const HttpConfig& cfg, std::string_view ta
     return raw;
 }
 
+// End of the header block. myIO terminates 200 OK header lines with bare LF
+// while its 401 response uses CRLF — accept both, whichever comes first.
+static std::size_t header_end(const std::string& raw, std::size_t& sep_len) {
+    const auto crlf = raw.find("\r\n\r\n");
+    const auto lf   = raw.find("\n\n");
+    if (crlf != std::string::npos && (lf == std::string::npos || crlf < lf)) {
+        sep_len = 4;
+        return crlf;
+    }
+    sep_len = 2;
+    return lf;
+}
+
+// The status code must come from the status line only — a substring search
+// over the whole response would misfire on e.g. "Content-Length: 1401".
+static bool is_http_401(const std::string& raw) {
+    const auto eol = raw.find('\n');
+    const std::string_view status_line(
+        raw.data(), eol == std::string::npos ? raw.size() : eol);
+    return status_line.starts_with("HTTP/") &&
+           status_line.find(" 401") != std::string_view::npos;
+}
+
 std::string http_get(const HttpConfig& cfg, std::string_view target) {
     const std::string raw = fetch_raw_response(cfg, target);
 
+    if (is_http_401(raw))
+        throw std::runtime_error(
+            std::format("[{}] HTTP 401 – wrong username or password", cfg.host));
+
     const auto json_start = raw.find('{');
-    if (json_start == std::string::npos) {
-        if (raw.find("401") != std::string::npos)
-            throw std::runtime_error(
-                std::format("[{}] HTTP 401 – wrong username or password", cfg.host));
+    if (json_start == std::string::npos)
         throw std::runtime_error(
             std::format("[{}] No JSON found in response", cfg.host));
-    }
 
     const auto json_end = raw.rfind('}');
     if (json_end == std::string::npos || json_end < json_start)
@@ -82,12 +106,13 @@ std::string http_get(const HttpConfig& cfg, std::string_view target) {
 std::string http_get_raw(const HttpConfig& cfg, std::string_view target) {
     const std::string raw = fetch_raw_response(cfg, target);
 
-    if (raw.find("401") != std::string::npos)
+    if (is_http_401(raw))
         throw std::runtime_error(
             std::format("[{}] HTTP 401 – wrong username or password", cfg.host));
 
-    const auto sep = raw.find("\r\n\r\n");
-    return (sep != std::string::npos) ? raw.substr(sep + 4) : raw;
+    std::size_t sep_len = 0;
+    const auto sep = header_end(raw, sep_len);
+    return (sep != std::string::npos) ? raw.substr(sep + sep_len) : raw;
 }
 
 } // namespace myio
