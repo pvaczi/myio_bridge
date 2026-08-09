@@ -30,5 +30,5 @@ vcpkg_installed/
 data/bridge.json
 data/discovery_input.json
 
-# Claude Code lokális beállítások
-.claude/settings.json
+# AI-kliens munkafájlok — az egész mappa, ne csak a settings.json
+.claude/
