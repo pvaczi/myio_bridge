@@ -1,6 +1,7 @@
 {
   "name": "myio-bridge",
   "version-string": "1.0.0",
+  "builtin-baseline": "cd5b7c8681f6dac3a38431547790dd246a14c1dc",
   "dependencies": [
     "boost-asio",
     "boost-beast",

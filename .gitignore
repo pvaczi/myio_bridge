@@ -32,3 +32,4 @@ data/discovery_input.json
 
 # AI-kliens munkafájlok — az egész mappa, ne csak a settings.json
 .claude/
+__pycache__/
