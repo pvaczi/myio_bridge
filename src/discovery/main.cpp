@@ -149,7 +149,8 @@ fetch_pca_desc(const myio::HttpConfig& hcfg) {
 // ── END FIRMWARE BUG WORKAROUND ───────────────────────────────────────────────
 
 // ── Existing bridge.json ──────────────────────────────────────────────────────
-// Parsed as-is; discovery::merge_server() keeps every user-set key (see merge.hpp).
+// Parsed as-is; discovery::merge_server() keeps every user-set key except `name`,
+// which is refreshed from the device (see merge.hpp).
 
 static json::object read_existing(const std::string& path) {
     std::ifstream f(path);
@@ -477,10 +478,12 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    // Existing bridge.json: user-set keys are merged back in (see merge.hpp)
+    // Existing bridge.json: user-set keys are merged back in, except `name`, which
+    // is refreshed from the device (see merge.hpp)
     const json::object existing = read_existing(output_path);
     if (!existing.empty())
-        myio::log("[discovery] Merging into existing {} (user-set keys preserved)", output_path);
+        myio::log("[discovery] Merging into existing {} (user-set keys preserved, names refreshed from the device)",
+                  output_path);
 
     json::object root = existing;   // unknown root-level keys round-trip
     root["mqtt"] = input.mqtt;

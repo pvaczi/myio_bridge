@@ -19,8 +19,9 @@ using MergeReport = std::vector<std::string>;
 //   - server-level keys: existing value wins; keys missing from the existing entry are added;
 //     a stale `_error` (stub of an earlier failed run) is dropped, as the server answered now
 //   - entries in pca/relays/pwm/sensors/covers are matched by id; the existing entry is the base
-//     (every user-set key and unknown key survives); `name` and "_"-prefixed diagnostics are
-//     refreshed from the device; keys missing from the existing entry are added
+//     (every user-set and unknown key survives, EXCEPT `name`: it and the "_"-prefixed
+//     diagnostics are refreshed from the device, so a user-edited name is overwritten);
+//     keys missing from the existing entry are added
 //   - new device entries are appended with their discovery defaults
 //   - existing entries the device no longer reports are KEPT and reported
 json::object merge_server(const json::object* existing, const json::object& fresh,
