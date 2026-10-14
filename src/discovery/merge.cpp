@@ -102,6 +102,9 @@ json::object merge_server(const json::object* existing, const json::object& fres
     const std::string sid = server_id_of(fresh);
     json::object out = *existing;
 
+    // The server answered this run: a stub's `_error` from an earlier failed run is stale.
+    out.erase("_error");
+
     // Server-level keys: existing wins, gaps filled from the fresh entry.
     for (const auto& [k, v] : fresh)
         if (!is_section(k) && !out.contains(k))

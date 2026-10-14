@@ -478,6 +478,12 @@ void test_discovery_merge() {
     const auto stub = discovery::failed_server(nullptr, "new", "h", "timeout", r4);
     CHECK(stub.at("_error").as_string() == "timeout");
 
+    // Successful run over an earlier failure stub: the stale `_error` is dropped
+    discovery::MergeReport r5;
+    const auto recovered = discovery::merge_server(&stub, obj(R"({"id":"new","host":"h","port":80})"), r5);
+    CHECK(!recovered.contains("_error"));
+    CHECK(recovered.at("port").to_number<int>() == 80);
+
     // find_server
     const auto root = obj(R"({"servers":[{"id":"a"},{"id":"b","host":"h"}]})");
     CHECK(discovery::find_server(root, "b") != nullptr);

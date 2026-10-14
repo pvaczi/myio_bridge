@@ -16,7 +16,8 @@ namespace json = boost::json;
 using MergeReport = std::vector<std::string>;
 
 // Merges a freshly discovered server entry into the existing one (nullptr = none).
-//   - server-level keys: existing value wins; keys missing from the existing entry are added
+//   - server-level keys: existing value wins; keys missing from the existing entry are added;
+//     a stale `_error` (stub of an earlier failed run) is dropped, as the server answered now
 //   - entries in pca/relays/pwm/sensors/covers are matched by id; the existing entry is the base
 //     (every user-set key and unknown key survives); `name` and "_"-prefixed diagnostics are
 //     refreshed from the device; keys missing from the existing entry are added
