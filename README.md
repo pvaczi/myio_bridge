@@ -74,7 +74,14 @@ Copy `data/discovery_input.example.json` to `data/discovery_input.json` and fill
 
 This queries each server's `/d_sens_out.json` endpoint and writes a fully populated `bridge.json`. All outputs are initially set to `"enabled": false`.
 
-Re-running discovery on an existing `bridge.json` is safe: enabled flags and custom names are preserved for matching entries, phantom sensors (present in the JSON but absent from the hardware) are removed, and cover endpoint types are matched correctly.
+Re-running discovery on an existing `bridge.json` merges per entry (matched by `id`, within server and section `pca`/`relays`/`pwm`/`sensors`/`covers`) and prints a report of what changed:
+
+- The existing entry is the base: `enabled`, `type`, `writable`, `device_class`, `log_threshold` and any other user key are preserved; keys missing from it are filled in from the device.
+- `name` and `_`-prefixed diagnostic fields are refreshed from the device (a user-edited name is overwritten, since the tool cannot tell it from a device name). Cover `up`/`down` objects are merged the same way.
+- Server-level keys: existing wins, gaps are filled.
+- New outputs reported by the device are added (`enabled: false`) and listed in the report.
+- Entries the device no longer reports are **kept** and listed ("review/remove manually") — nothing is deleted.
+- A server whose query fails keeps its existing config unchanged (reported); a server absent from the input file is kept unchanged.
 
 ### Step 3 — Edit bridge.json
 
@@ -87,7 +94,7 @@ Optional per-server tuning fields (defaults shown; omit to use the default):
 
 | Field | Default | Meaning |
 |---|---|---|
-| `poll_interval_sec` | `2` | How often the server is polled over HTTP. |
+| `poll_interval_sec` | `5` | How often the server is polled over HTTP (must be > 0). |
 | `sensor_log_threshold` | `0.1` | Minimum sensor change (°C / unit) that gets logged; `0` logs every publish. |
 | `log_startup_sync` | `false` | Log entity states during startup/resync. |
 | `coalesce_window_ms` | `5` | How long to wait after the first command so sibling commands from the same HA action batch into one POST; `0` disables batching. See [Command latency & TCP delayed-ACK](#command-latency--tcp-delayed-ack). |
@@ -143,6 +150,24 @@ Optional per-server tuning fields (defaults shown; omit to use the default):
 
 Disabled entries (`"enabled": false`) are removed from Home Assistant's entity registry automatically via MQTT undiscovery messages.
 
+Optional per-output keys (`pca`, `relays`, `pwm`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `writable` | `true` | `false` → read-only entity without `command_topic`; commands to its `/set` topic are dropped. See [Entity types](#entity-types). |
+| `device_class` | — | HA device class, only used when the entity is a `binary_sensor` (read-only switch/relay), e.g. `"door"`. Must be a non-empty string if present. |
+
+#### Config validation
+
+The bridge refuses to start (config error) if:
+
+- `poll_interval_sec` ≤ 0;
+- `mqtt.topic_prefix`, a server `id` or a cover `id` is empty or contains `/`, `+` or `#` (each must be a single topic level);
+- a server `id` is `bridge` (reserved for the bridge availability topic);
+- `mqtt.port` or a server `port` is outside 1..65535;
+- a cover lacks the `up` or `down` object, or an endpoint `type` is not `"pca"` or `"relay"`;
+- `writable` is not a boolean, or is `false` on a cover or on a `cover_up`/`cover_down` output.
+
 ### Step 4 — Run the bridge
 
 ```bash
@@ -152,23 +177,31 @@ Disabled entries (`"enabled": false`) are removed from Home Assistant's entity r
 The bridge will:
 1. Connect to the MQTT broker.
 2. Publish Home Assistant auto-discovery messages for all enabled entities.
-3. Start polling each server at the configured interval (default: 2 s).
+3. Start polling each server at the configured interval (default: 5 s).
 4. Listen for commands from Home Assistant and forward them to the myIO servers.
 
 Press `Ctrl+C` to stop gracefully.
 
 ## Entity types
 
-The `"type"` field on each output determines how it appears in Home Assistant and which commands it accepts.
+The `"type"` field and the `"writable"` flag of each output determine its HA entity and the commands it accepts:
 
-| Type | `"type"` value | HA entity | myIO output | Description |
-|---|---|---|---|---|
-| Switch | `"switch"` | `switch` | PCA or relay | Simple on/off |
-| Dimmer | `"light"` | `light` | PCA or PWM | Brightness control (0–100%) |
-| Number | `"number"` | `number` | PCA or PWM | Generic 0–100% slider — use for valves, pumps, fans, etc. |
-| Cover | `"cover_up"` + `"cover_down"` | `cover` | Two PCA or relay outputs | Shutter or blind with open/close/stop |
-| Sensor output | `"sensor_output"` | *(not exposed)* | PCA or relay | Controlled automatically by a sensor; not shown in HA |
-| Sensor | *(sensors section)* | `sensor` | — | Temperature, humidity, energy, power, voltage, current |
+| Output | `"type"` | `writable: true` (default) | `writable: false` |
+|---|---|---|---|
+| PCA | `switch` (default for unknown values) | `switch` | `binary_sensor` (ON/OFF) |
+| PCA | `sensor_output` | `switch` | `binary_sensor` |
+| PCA | `light` | `light` (brightness if the output is PWM-capable) | `sensor` (%) |
+| PCA | `number` | `number` (0–100 %) | `sensor` (%) |
+| Relay | any non-cover type | `switch` | `binary_sensor` |
+| PWM | `light` (and any non-`number` type) | `light` with brightness | `sensor` (%) |
+| PWM | `number` | `number` (0–100 %) | `sensor` (%) |
+| PCA / relay | `cover_up` / `cover_down` | no entity | config error |
+| Cover | `covers` section (`up` + `down`) | `cover` | config error |
+| Sensor | *(sensors section)* | `sensor` (read-only) | — |
+
+**Cover endpoints have no entity of their own** while their cover is `enabled`: any PCA/relay output referenced by an enabled cover's `up`/`down`, and any output typed `cover_up`/`cover_down`, is represented only by the cover. PWM outputs are never cover endpoints.
+
+Read-only entities carry no `command_topic`; a command that still arrives on the `/set` topic is dropped with a warning. `binary_sensor` entities read the switch state topic; `sensor` (%) entities read the number state topic, or `light/{id}/percent` for a former light. Changing `type` or `writable` clears the stale discovery topic of the previous component.
 
 ### Switch
 
@@ -180,7 +213,7 @@ A simple on/off relay or PCA output. Appears as a toggle switch in Home Assistan
 
 ### Dimmer (light)
 
-A PWM-capable output exposed as a dimmable light in Home Assistant. Brightness is expressed as 0–100%.
+A PWM-capable output exposed as a dimmable light in Home Assistant. Brightness commands are 0–255 (raw myIO value, sent as-is).
 
 ```json
 { "id": 2002, "name": "Living room dimmer", "type": "light", "enabled": true }
@@ -188,7 +221,7 @@ A PWM-capable output exposed as a dimmable light in Home Assistant. Brightness i
 
 ### Number
 
-A PWM-capable output exposed as a generic number slider (0–100%) in Home Assistant. Use this instead of `"light"` when the output controls something that is not a lamp — for example:
+A PCA or PWM output exposed as a generic number slider (0–100%) in Home Assistant; the bridge scales it to the device's raw 0–255 (`raw = round(pct × 255 / 100)`) and back. Use this instead of `"light"` when the output controls something that is not a lamp — for example:
 
 - Mixing valves (floor heating, solar collector)
 - Circulation or irrigation pumps with variable speed
@@ -213,7 +246,7 @@ A cover is defined in the `"covers"` section and references two outputs — one 
 }
 ```
 
-The `"type"` field inside `"up"` and `"down"` can be `"pca"` or `"relay"`. The referenced output IDs must not also appear in the `"pca"` or `"relays"` sections as standalone switches — the bridge excludes cover outputs from the switch list automatically.
+The `"type"` field inside `"up"` and `"down"` can be `"pca"` or `"relay"`. Both `up` and `down` are required. Outputs referenced by an enabled cover that also appear in `"pca"` or `"relays"` get no standalone entity — the bridge excludes them automatically. A cover cannot be `"writable": false`.
 
 ### Sensor
 
@@ -259,16 +292,26 @@ All topics are prefixed with `topic_prefix` (default: `myio`).
 
 | Entity | State topic | Command topic |
 |---|---|---|
-| Switch | `myio/{server}/{id}/state` | `myio/{server}/{id}/set` |
+| Switch | `myio/{server}/switch/{id}/state` | `myio/{server}/switch/{id}/set` |
 | Light | `myio/{server}/light/{id}/state` | `myio/{server}/light/{id}/set` |
 | Light brightness | `myio/{server}/light/{id}/brightness` | `myio/{server}/light/{id}/brightness/set` |
 | Number | `myio/{server}/number/{id}/state` | `myio/{server}/number/{id}/set` |
 | Cover | `myio/{server}/cover/{cover_id}/state` | `myio/{server}/cover/{cover_id}/set` |
+| Read-only light/number (`sensor` %) | `myio/{server}/light/{id}/percent` (former light) or `myio/{server}/number/{id}/state` | — |
 | Sensor | `myio/{server}/sensor/{id}/state` | — |
+| Bridge availability | `myio/bridge/availability` | — |
+| Server availability | `myio/{server}/availability` | — |
 
-All state topics are published with `retain = true`.
+All state and availability topics are published with `retain = true`. Discovery messages are retained too; the discovery configs never set `retain`, so HA's `/set` commands are not retained.
 
-Home Assistant auto-discovery messages are published to the standard `homeassistant/` prefix.
+Home Assistant auto-discovery messages are published to the standard `homeassistant/` prefix. Each entity carries a device block (one device per myIO server, `via_device` the bridge device), an `origin`, and `default_entity_id`.
+
+### Availability
+
+- `<prefix>/bridge/availability` is the bridge's MQTT Last Will. Payloads are `online` / `offline`. `online` is published after connecting (overriding a retained `offline` of a crash); `offline` on clean shutdown or by the broker via the Will.
+- `<prefix>/<server_id>/availability`: `online` after the first successful poll (and again on recovery); `offline` only after **3 consecutive failed polls**, so a short W5100 hiccup does not flap the entities.
+- Every entity lists both topics with `availability_mode: all` — it is available only while the bridge and its server are both online.
+- A diagnostic `binary_sensor` (`myIO bridge` device, device class `connectivity`) shows the bridge's state from the bridge availability topic; it has no availability of its own.
 
 ## Command latency & TCP delayed-ACK
 
@@ -413,7 +456,7 @@ Access is protected by HTTP Basic auth. Credentials live in `/opt/myio-bridge/da
 
 Features:
 - **Bridge mode** (default): start/stop the bridge, edit `bridge.json`, view the live log
-- **Discovery mode**: run discovery (with confirmation — overwrites `bridge.json`), edit `discovery_input.json`; only available when the bridge is stopped
+- **Discovery mode**: run discovery (with confirmation — merges into `bridge.json`, see the discovery re-run rules), edit `discovery_input.json`; only available when the bridge is stopped
 - **Live log**: last 200 lines of the bridge's systemd journal, with manual refresh or auto-refresh every 3 seconds
 - **`bridge.json` editor**: opens in a resizable, draggable floating popup (760×560 px). Toggle between **Raw** (plain textarea) and **Visual** modes via the button in the popup header.
   - **Visual mode** — a custom form editor built on Bootstrap; no external library required:
@@ -440,15 +483,28 @@ The bridge communicates with myIO servers using their built-in HTTP API:
 
 Authentication uses HTTP Basic Auth.
 
+### Command handling
+
+Payloads are validated strictly (case-insensitive, whitespace trimmed); anything else — including an empty payload such as a retained-clear — is dropped with a warning: no POST, no state publish.
+
+| Entity | Accepted payload |
+|---|---|
+| switch, light on/off | `ON` / `OFF` |
+| light brightness | integer 0–255 |
+| number | integer 0–100 (%), sent as raw 0–255 |
+| cover | `OPEN` / `CLOSE` / `STOP` |
+
+Also dropped: commands whose topic component does not match the output's configured type, read-only outputs, and cover endpoints. A POST answered with HTTP 401, 4xx or 5xx is an error (3xx is accepted); the optimistic state is then **not** published. A response without a status line is treated as accepted.
+
 ### POST commands
 
 | Command | Example | Description |
 |---|---|---|
 | `PCA_ON={id}` | `PCA_ON=2005` | Turn PCA output on |
 | `PCA_OFF={id}` | `PCA_OFF=2005` | Turn PCA output off |
-| `PCA*{id}={pct}` | `PCA*2005=75` | Set PCA PWM output to 0–100% |
+| `PCA*{id}={raw}` | `PCA*2005=191` | Set PCA PWM output to raw 0–255 (number: 75 % → 191) |
 | `r_ON={id}` | `r_ON=3` | Turn relay on |
 | `r_OFF={id}` | `r_OFF=3` | Turn relay off |
 | `f_ON={id-100}` | `f_ON=1` | Turn PWM output on (id 101 → use 1) |
 | `f_OFF={id-100}` | `f_OFF=1` | Turn PWM output off |
-| `fet*{id-100}={pct}` | `fet*1=75` | Set PWM output to 0–100% |
+| `fet*{id-100}={raw}` | `fet*1=191` | Set PWM output to raw 0–255 |
