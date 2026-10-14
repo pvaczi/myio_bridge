@@ -77,6 +77,14 @@ std::optional<int> parse_int_in_range(std::string_view payload, int lo, int hi) 
     return value;
 }
 
+int percent_to_raw(int percent) {
+    return (percent * 255 + 50) / 100;  // round half up, non-negative input
+}
+
+int raw_to_percent(int raw) {
+    return (raw * 100 + 127) / 255;     // round half up, non-negative input
+}
+
 std::optional<CoverCommand> parse_cover_command(std::string_view payload) {
     const auto p = upper(trim(payload));
     if (p == "OPEN")  return CoverCommand::Open;

@@ -598,7 +598,7 @@ net::awaitable<void> ServerBridge::publish_discovery() {
 net::awaitable<void> ServerBridge::publish_pca_state(const myio::PcaOutput& pca,
                                                        const config::PcaConfig& cfg) {
     if (cfg.type == config::OutputType::Number) {
-        const int pct = static_cast<int>(std::round(pca.state / 255.0 * 100.0));
+        const int pct = raw_to_percent(pca.state);
         co_await publisher_->async_publish(
             number_state_topic(topic_prefix_, cfg_.server_id, pca.id),
             std::to_string(pct), true);
@@ -610,7 +610,7 @@ net::awaitable<void> ServerBridge::publish_pca_state(const myio::PcaOutput& pca,
 
     // Read-only light: its HA entity is a percentage sensor
     if (cfg.type == config::OutputType::Light && !cfg.writable) {
-        const int pct = static_cast<int>(std::round(pca.state / 255.0 * 100.0));
+        const int pct = raw_to_percent(pca.state);
         co_await publisher_->async_publish(
             light_percent_topic(topic_prefix_, cfg_.server_id, pca.id),
             std::to_string(pct), true);
@@ -626,7 +626,7 @@ net::awaitable<void> ServerBridge::publish_pca_state(const myio::PcaOutput& pca,
         co_await publisher_->async_publish(
             light_state_topic(topic_prefix_, cfg_.server_id, pca.id), on_off, true);
         if (pca.is_pwm) {
-            const int pct = static_cast<int>(std::round(pca.state / 255.0 * 100.0));
+            const int pct = raw_to_percent(pca.state);
             co_await publisher_->async_publish(
                 light_bright_topic(topic_prefix_, cfg_.server_id, pca.id),
                 std::to_string(pca.state), true);
@@ -681,7 +681,7 @@ net::awaitable<void> ServerBridge::publish_cover_state(const config::CoverConfig
 net::awaitable<void> ServerBridge::publish_pwm_state(const myio::PwmOutput& pwm,
                                                        const config::PwmConfig& cfg) {
     if (cfg.type == config::OutputType::Number) {
-        const int pct = static_cast<int>(std::round(pwm.state / 255.0 * 100.0));
+        const int pct = raw_to_percent(pwm.state);
         co_await publisher_->async_publish(
             number_state_topic(topic_prefix_, cfg_.server_id, pwm.id),
             std::to_string(pct), true);
@@ -692,7 +692,7 @@ net::awaitable<void> ServerBridge::publish_pwm_state(const myio::PwmOutput& pwm,
     }
 
     const std::string on_off = (pwm.state > pwm.turn_off) ? "ON" : "OFF";
-    const int pct = static_cast<int>(std::round(pwm.state / 255.0 * 100.0));
+    const int pct = raw_to_percent(pwm.state);
     // Read-only light: its HA entity is a percentage sensor
     if (!cfg.writable) {
         co_await publisher_->async_publish(
@@ -1229,17 +1229,31 @@ ServerBridge::prepare_command(const std::string& topic,
     const bool is_pca = (target->kind == OutputKind::Pca);
     const std::string& dev_name = target->name;
 
-    // Number value (0–100, passed through to PCA*/fet* as percentage)
+    // Number value: HA sends 0–100 %, myIO expects raw 0–255
     if (entity_type == "number") {
         const auto value = parse_int_in_range(payload, 0, 100);
         if (!value) return drop("number payload must be an integer 0..100");
+        const int pct = *value;
+        const int raw = percent_to_raw(pct);
 
         const std::string post = is_pca
-            ? std::format("PCA*{}={}", id,       *value)
-            : std::format("fet*{}={}", id - 100, *value);
-        myio::log("[{}] [broker to myIO] Number {} ({}) → {}", cfg_.server_id, id, dev_name, post);
+            ? std::format("PCA*{}={}", id,       raw)
+            : std::format("fet*{}={}", id - 100, raw);
+        myio::log("[{}] [broker to myIO] Number {} ({}) → {} ({}%)",
+                  cfg_.server_id, id, dev_name, post, pct);
+
+        const bool num_is_pca = is_pca;
         PreparedCommand pcmd;
         pcmd.post = post;
+        pcmd.publish_state = [this, id, raw, num_is_pca]() -> net::awaitable<void> {
+            // Optimistic state: same raw → percent conversion the poll will report
+            co_await publisher_->async_publish(
+                number_state_topic(topic_prefix_, cfg_.server_id, id),
+                std::to_string(raw_to_percent(raw)), true);
+            if (num_is_pca) last_pca_state_[id] = raw;
+            else            last_pwm_state_[id] = raw;
+            co_return;
+        };
         return pcmd;
     }
 

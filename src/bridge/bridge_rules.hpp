@@ -37,6 +37,11 @@ std::optional<bool> parse_on_off(std::string_view payload);
 // empty, partial ("12abc"), fractional or out-of-range payloads → nullopt.
 std::optional<int> parse_int_in_range(std::string_view payload, int lo, int hi);
 
+// HA percentage (0–100) <-> myIO raw output value (0–255), both rounded to nearest.
+// percent_to_raw → raw_to_percent round-trips exactly for every integer 0..100.
+int percent_to_raw(int percent);
+int raw_to_percent(int raw);
+
 enum class CoverCommand { Open, Close, Stop };
 
 // OPEN / CLOSE / STOP (case-insensitive, whitespace-trimmed); anything else → nullopt.
