@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace bridge {
 
@@ -28,6 +29,19 @@ std::string_view command_component(OutputKind kind, config::OutputType type);
 // otherwise its read-only counterpart (switch → binary_sensor, light/number → sensor).
 // "" = not published as a standalone entity (cover endpoint).
 std::string_view ha_component(OutputKind kind, config::OutputType type, bool writable);
+
+// ── Cover endpoints ───────────────────────────────────────────────────────────
+// An output that is an endpoint of an ENABLED cover is driven only through its
+// cover entity: discovery gives it no own entity, its own /set is dropped and
+// the poll publishes it only as part of the cover state. Endpoints of a
+// disabled cover are free outputs again. A PWM output is never an endpoint.
+
+// The enabled cover whose up or down endpoint is output (kind, id); nullptr if none.
+const config::CoverConfig* find_enabled_cover(const std::vector<config::CoverConfig>& covers,
+                                              OutputKind kind, int id);
+
+// find_enabled_cover(covers, kind, id) != nullptr
+bool is_cover_endpoint(const std::vector<config::CoverConfig>& covers, OutputKind kind, int id);
 
 // Strict ON/OFF: surrounding whitespace and letter case are ignored, anything
 // else (including an empty payload, e.g. a retained-clear) → nullopt.

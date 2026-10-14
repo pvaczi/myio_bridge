@@ -376,20 +376,6 @@ static net::awaitable<void> cover_motor_timeout(
     } catch (...) {}
 }
 
-// An output that is an endpoint of an ENABLED cover is driven only through its
-// cover entity: discovery gives it no own entity and its own /set is dropped.
-// Endpoints of a disabled cover are free outputs again.
-static bool is_cover_endpoint(const std::vector<config::CoverConfig>& covers,
-                              OutputKind kind, int id) {
-    if (kind == OutputKind::Pwm) return false;
-    const std::string_view t = (kind == OutputKind::Relay) ? "relay" : "pca";
-    return std::ranges::any_of(covers, [&](const config::CoverConfig& c) {
-        return c.enabled &&
-               ((c.up.output_type   == t && c.up.id   == id) ||
-                (c.down.output_type == t && c.down.id == id));
-    });
-}
-
 // ── ServerBridge ──────────────────────────────────────────────────────────────
 
 ServerBridge::ServerBridge(config::ServerConfig               cfg,
@@ -403,22 +389,6 @@ ServerBridge::ServerBridge(config::ServerConfig               cfg,
     , client_(std::move(client))
     , cmd_chan_(ex, 1024)
 {}
-
-std::unordered_set<int> ServerBridge::cover_output_ids() const {
-    std::unordered_set<int> ids;
-    for (const auto& c : cfg_.covers) {
-        ids.insert(c.up.id);
-        ids.insert(c.down.id);
-    }
-    return ids;
-}
-
-const config::CoverConfig* ServerBridge::find_cover_by_output(int output_id) const {
-    for (const auto& c : cfg_.covers)
-        if (c.up.id == output_id || c.down.id == output_id)
-            return &c;
-    return nullptr;
-}
 
 // ── Discovery ─────────────────────────────────────────────────────────────────
 // For enabled entities:  publish the discovery JSON (HA registers them).
@@ -797,7 +767,6 @@ net::awaitable<void> ServerBridge::update_pca_capabilities(const myio::ServerSta
 
 net::awaitable<void> ServerBridge::poll_loop() {
     auto ex = co_await net::this_coro::executor;
-    const auto cover_ids = cover_output_ids();
 
     // Build fast id → config lookup maps (enabled entries only for state publishing)
     std::unordered_map<int, const config::PcaConfig*>    pca_map;
@@ -812,13 +781,6 @@ net::awaitable<void> ServerBridge::poll_loop() {
         if (e.enabled) sensor_map[e.id] = &e;
     for (const auto& e : cfg_.pwm)
         if (e.enabled) pwm_map[e.id] = &e;
-
-    std::unordered_map<int, const config::CoverConfig*> cover_map;
-    for (const auto& c : cfg_.covers)
-        if (c.enabled) {
-            cover_map[c.up.id]   = &c;
-            cover_map[c.down.id] = &c;
-        }
 
     // /info.json (firmware version) is fetched by the first publish_discovery;
     // only if that failed is it retried here, after a successful poll. From
@@ -865,10 +827,9 @@ net::awaitable<void> ServerBridge::poll_loop() {
             std::unordered_set<int> scheduled_pca_covers, scheduled_relay_covers;
 
             for (const auto& pca : state.pca_outputs) {
-                if (cover_ids.contains(pca.id)) {
-                    const auto* cover = cover_map.count(pca.id) ? cover_map.at(pca.id) : nullptr;
-                    if (!cover) continue;
-
+                // Endpoint of an enabled cover: published only as the cover state
+                // (same rule as discovery and the command path).
+                if (const auto* cover = find_enabled_cover(cfg_.covers, OutputKind::Pca, pca.id)) {
                     const int other_id = (pca.id == cover->up.id)
                                            ? cover->down.id : cover->up.id;
                     int other_state = 0;
@@ -906,10 +867,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
             }
 
             for (const auto& relay : state.relay_outputs) {
-                if (cover_ids.contains(relay.id)) {
-                    const auto* cover = cover_map.count(relay.id) ? cover_map.at(relay.id) : nullptr;
-                    if (!cover) continue;
-
+                if (const auto* cover = find_enabled_cover(cfg_.covers, OutputKind::Relay, relay.id)) {
                     const int other_id = (relay.id == cover->up.id)
                                            ? cover->down.id : cover->up.id;
                     int other_state = 0;

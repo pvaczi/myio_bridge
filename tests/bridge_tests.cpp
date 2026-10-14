@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -183,6 +184,42 @@ void test_component_mapping() {
     CHECK(ha_component(OutputKind::Pwm, OutputType::Light,  true)  == "light");
     CHECK(ha_component(OutputKind::Pwm, OutputType::Number, true)  == "number");
     CHECK(ha_component(OutputKind::Pwm, OutputType::Light,  false) == "sensor");
+}
+
+void test_cover_endpoint_rule() {
+    using bridge::OutputKind;
+    using bridge::find_enabled_cover;
+    using bridge::is_cover_endpoint;
+
+    auto cover = [](const char* id, bool enabled, const char* type, int up, int down) {
+        config::CoverConfig c;
+        c.cover_id = id;
+        c.enabled  = enabled;
+        c.up       = {type, up};
+        c.down     = {type, down};
+        return c;
+    };
+    const std::vector<config::CoverConfig> covers = {
+        cover("pca_on",    true,  "pca",   3, 4),
+        cover("pca_off",   false, "pca",   5, 6),
+        cover("relay_on",  true,  "relay", 1, 2),
+    };
+
+    // Endpoints of an enabled cover, matched by output type and id
+    CHECK(find_enabled_cover(covers, OutputKind::Pca, 3) == &covers[0]);
+    CHECK(find_enabled_cover(covers, OutputKind::Pca, 4) == &covers[0]);
+    CHECK(find_enabled_cover(covers, OutputKind::Relay, 2) == &covers[2]);
+    CHECK(is_cover_endpoint(covers, OutputKind::Relay, 1));
+
+    // Endpoints of a disabled cover are free outputs again
+    CHECK(find_enabled_cover(covers, OutputKind::Pca, 5) == nullptr);
+    CHECK(!is_cover_endpoint(covers, OutputKind::Pca, 6));
+
+    // Same id in another output list is not the endpoint; PWM never is
+    CHECK(!is_cover_endpoint(covers, OutputKind::Relay, 3));
+    CHECK(!is_cover_endpoint(covers, OutputKind::Pca, 1));
+    CHECK(!is_cover_endpoint(covers, OutputKind::Pwm, 3));
+    CHECK(!is_cover_endpoint(covers, OutputKind::Pca, 99));
 }
 
 void test_on_off_parsing() {
@@ -458,6 +495,7 @@ int main() {
     test_writable_and_device_class();
     test_cover_not_read_only();
     test_component_mapping();
+    test_cover_endpoint_rule();
     test_on_off_parsing();
     test_numeric_parsing();
     test_percent_raw_conversion();

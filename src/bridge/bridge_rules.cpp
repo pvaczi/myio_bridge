@@ -60,6 +60,23 @@ std::string_view ha_component(OutputKind kind, config::OutputType type, bool wri
     return "sensor";  // light, number → percentage sensor
 }
 
+const config::CoverConfig* find_enabled_cover(const std::vector<config::CoverConfig>& covers,
+                                              OutputKind kind, int id) {
+    if (kind == OutputKind::Pwm) return nullptr;
+    const std::string_view t = (kind == OutputKind::Relay) ? "relay" : "pca";
+    for (const auto& c : covers) {
+        if (!c.enabled) continue;
+        if ((c.up.output_type   == t && c.up.id   == id) ||
+            (c.down.output_type == t && c.down.id == id))
+            return &c;
+    }
+    return nullptr;
+}
+
+bool is_cover_endpoint(const std::vector<config::CoverConfig>& covers, OutputKind kind, int id) {
+    return find_enabled_cover(covers, kind, id) != nullptr;
+}
+
 std::optional<bool> parse_on_off(std::string_view payload) {
     const auto p = upper(trim(payload));
     if (p == "ON")  return true;

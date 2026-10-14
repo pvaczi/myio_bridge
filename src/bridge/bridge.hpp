@@ -111,12 +111,6 @@ private:
     net::awaitable<void> process_command_batch(
         const std::vector<std::pair<std::string, std::string>>& batch);
 
-    // Returns the cover config that owns a given output id (or nullptr)
-    const config::CoverConfig* find_cover_by_output(int output_id) const;
-
-    // Returns the set of output ids that are part of a cover (not shown as standalone switches)
-    std::unordered_set<int> cover_output_ids() const;
-
     // State publishers – only publish on change
     net::awaitable<void> publish_pca_state  (const myio::PcaOutput&   pca,
                                               const config::PcaConfig& cfg);
