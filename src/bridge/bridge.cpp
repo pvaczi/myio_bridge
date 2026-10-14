@@ -1085,6 +1085,33 @@ ServerBridge::prepare_command(const std::string& topic,
             // The cache is written only after the publish succeeded; if it threw,
             // the old cache value makes the next poll republish the real state.
             const int key = -(c.up.id);
+
+            // After OPEN/CLOSE, the motor stops on its own when it reaches the end stop.
+            // The poll may not catch this within the 30 s interval, leaving HA stuck in
+            // "opening"/"closing". Spawn a timer that publishes "stopped" after 90 s as
+            // a safety net. If the user presses STOP first, or the poll catches it sooner,
+            // this publish is a harmless duplicate.
+            // Done before the first publish await: the POST already succeeded, so a
+            // failing publish must neither leave the old timer alive nor skip the new one.
+            if (cmd == "OPEN" || cmd == "CLOSE") {
+                if (c.motor_timeout_sec > 0) {
+                    const int end_pos = (cmd == "OPEN") ? 100 : 0;
+                    // Supersede the previous motor-timeout timer: without this a
+                    // rapid second OPEN/CLOSE leaves the first timer live, and it
+                    // would publish a premature "stopped" mid-movement.
+                    if (const auto it = last_cover_cancel_.find(key);
+                        it != last_cover_cancel_.end() && it->second)
+                        *it->second = true;
+                    auto flag = std::make_shared<bool>(false);
+                    last_cover_cancel_[key] = flag;
+                    net::co_spawn(co_await net::this_coro::executor,
+                        cover_motor_timeout(publisher_, topic_prefix_, cfg_.server_id,
+                                            c.cover_id, c.name, end_pos,
+                                            c.motor_timeout_sec, flag),
+                        net::detached);
+                }
+            }
+
             if (cmd == "OPEN") {
                 last_cover_dir_[key] = +1;
                 co_await publisher_->async_publish(
@@ -1109,30 +1136,6 @@ ServerBridge::prepare_command(const std::string& topic,
                 co_await publisher_->async_publish(
                     cover_position_topic(topic_prefix_, cfg_.server_id, c.cover_id), "50", true);
                 myio::log("[{}] [bridge to broker] Cover {} ({}) → stopped", cfg_.server_id, c.cover_id, c.name);
-            }
-
-            // After OPEN/CLOSE, the motor stops on its own when it reaches the end stop.
-            // The poll may not catch this within the 30 s interval, leaving HA stuck in
-            // "opening"/"closing". Spawn a timer that publishes "stopped" after 90 s as
-            // a safety net. If the user presses STOP first, or the poll catches it sooner,
-            // this publish is a harmless duplicate.
-            if (cmd == "OPEN" || cmd == "CLOSE") {
-                if (c.motor_timeout_sec > 0) {
-                    const int end_pos = (cmd == "OPEN") ? 100 : 0;
-                    // Supersede the previous motor-timeout timer: without this a
-                    // rapid second OPEN/CLOSE leaves the first timer live, and it
-                    // would publish a premature "stopped" mid-movement.
-                    if (const auto it = last_cover_cancel_.find(key);
-                        it != last_cover_cancel_.end() && it->second)
-                        *it->second = true;
-                    auto flag = std::make_shared<bool>(false);
-                    last_cover_cancel_[key] = flag;
-                    net::co_spawn(co_await net::this_coro::executor,
-                        cover_motor_timeout(publisher_, topic_prefix_, cfg_.server_id,
-                                            c.cover_id, c.name, end_pos,
-                                            c.motor_timeout_sec, flag),
-                        net::detached);
-                }
             }
                 co_return;
             };
