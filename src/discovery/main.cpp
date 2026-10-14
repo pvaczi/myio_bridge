@@ -1,3 +1,4 @@
+#include "merge.hpp"
 #include <log.hpp>
 #include <dsens_parser.hpp>
 #include <http_client.hpp>
@@ -147,48 +148,19 @@ fetch_pca_desc(const myio::HttpConfig& hcfg) {
 }
 // ── END FIRMWARE BUG WORKAROUND ───────────────────────────────────────────────
 
-// ── EnabledMap – ids that had enabled=true in the previous bridge.json ────────
-// Key: server_id → section ("pca","relays","pwm","sensors","covers") → id string.
-using EnabledMap = std::unordered_map<std::string,
-                   std::unordered_map<std::string,
-                   std::unordered_set<std::string>>>;
+// ── Existing bridge.json ──────────────────────────────────────────────────────
+// Parsed as-is; discovery::merge_server() keeps every user-set key (see merge.hpp).
 
-static EnabledMap read_enabled_map(const std::string& path) {
-    EnabledMap em;
+static json::object read_existing(const std::string& path) {
     std::ifstream f(path);
-    if (!f) return em;
+    if (!f) return {};
     try {
         const std::string content{std::istreambuf_iterator<char>(f),
                                    std::istreambuf_iterator<char>()};
         const json::value root = json::parse(content);
-        const auto* servers_v = root.as_object().if_contains("servers");
-        if (!servers_v || !servers_v->is_array()) return em;
-        for (const auto& srv_v : servers_v->as_array()) {
-            if (!srv_v.is_object()) continue;
-            const auto& srv = srv_v.as_object();
-            const auto* id_v = srv.if_contains("id");
-            if (!id_v || !id_v->is_string()) continue;
-            const std::string srv_id = std::string(id_v->as_string());
-            for (const char* section : {"pca", "relays", "pwm", "sensors", "covers"}) {
-                const auto* arr_v = srv.if_contains(section);
-                if (!arr_v || !arr_v->is_array()) continue;
-                for (const auto& entry_v : arr_v->as_array()) {
-                    if (!entry_v.is_object()) continue;
-                    const auto& entry = entry_v.as_object();
-                    const auto* en = entry.if_contains("enabled");
-                    if (!en || !en->is_bool() || !en->as_bool()) continue;
-                    const auto* eid = entry.if_contains("id");
-                    if (!eid) continue;
-                    std::string id_str;
-                    if (eid->is_int64())       id_str = std::to_string(eid->as_int64());
-                    else if (eid->is_string()) id_str = std::string(eid->as_string());
-                    else continue;
-                    em[srv_id][section].insert(id_str);
-                }
-            }
-        }
+        if (root.is_object()) return root.as_object();
     } catch (...) {}
-    return em;
+    return {};
 }
 
 // ── Cover candidate detection ─────────────────────────────────────────────────
@@ -394,8 +366,7 @@ static json::array make_cover_array(
 static json::object make_server_entry(const InputServer& is,
                                        const myio::ServerState& state,
                                        const myio::HttpConfig& hcfg,
-                                       const std::string& pca_default_type,
-                                       const EnabledMap& enabled_map) {
+                                       const std::string& pca_default_type) {
     auto name_map = build_name_map(state);
 
     // ── FIRMWARE BUG WORKAROUND: supplement empty PCA names (id > 2100) ──────────
@@ -420,27 +391,6 @@ static json::object make_server_entry(const InputServer& is,
         cover_ids.insert(c.down_id);
     }
 
-    // Helper: restore enabled=true from previous bridge.json by id
-    auto apply_enabled = [&](json::array& arr, const std::string& section) {
-        auto sit = enabled_map.find(is.id);
-        if (sit == enabled_map.end()) return;
-        auto secit = sit->second.find(section);
-        if (secit == sit->second.end()) return;
-        const auto& id_set = secit->second;
-        for (auto& v : arr) {
-            if (!v.is_object()) continue;
-            auto& o = v.as_object();
-            const auto* eid = o.if_contains("id");
-            if (!eid) continue;
-            std::string id_str;
-            if (eid->is_int64())       id_str = std::to_string(eid->as_int64());
-            else if (eid->is_string()) id_str = std::string(eid->as_string());
-            else continue;
-            if (id_set.count(id_str))
-                o["enabled"] = true;
-        }
-    };
-
     json::object srv;
     srv["id"]                = is.id;
     srv["host"]              = is.host;
@@ -464,7 +414,6 @@ static json::object make_server_entry(const InputServer& is,
         }
         pca_arr.push_back(make_pca_entry(p, pca_default_type, name, type_override));
     }
-    apply_enabled(pca_arr, "pca");
     if (!pca_arr.empty()) srv["pca"] = std::move(pca_arr);
 
     // Relay outputs – named only; same cover tagging
@@ -478,7 +427,6 @@ static json::object make_server_entry(const InputServer& is,
         }
         relay_arr.push_back(make_relay_entry(r, type_override));
     }
-    apply_enabled(relay_arr, "relays");
     if (!relay_arr.empty()) srv["relays"] = std::move(relay_arr);
 
     // PWM outputs – named only
@@ -487,7 +435,6 @@ static json::object make_server_entry(const InputServer& is,
         if (p.name.empty()) continue;
         pwm_arr.push_back(make_pwm_entry(p));
     }
-    apply_enabled(pwm_arr, "pwm");
     if (!pwm_arr.empty()) srv["pwm"] = std::move(pwm_arr);
 
     // Sensors – named only, with at least one actual measurement value.
@@ -499,12 +446,10 @@ static json::object make_server_entry(const InputServer& is,
             !s.power && !s.voltage && !s.current) continue;
         sensor_arr.push_back(make_sensor_entry(s));
     }
-    apply_enabled(sensor_arr, "sensors");
     if (!sensor_arr.empty()) srv["sensors"] = std::move(sensor_arr);
 
     // Covers – omit section entirely if no candidates detected
     json::array cover_arr = make_cover_array(cover_cands, name_map, pca_timer_map);
-    apply_enabled(cover_arr, "covers");
     if (!cover_arr.empty()) srv["covers"] = std::move(cover_arr);
 
     return srv;
@@ -532,15 +477,16 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    // Read existing bridge.json to preserve manually set enabled=true entries
-    const EnabledMap enabled_map = read_enabled_map(output_path);
-    if (!enabled_map.empty())
-        myio::log("[discovery] Preserving enabled=true from existing {}", output_path);
+    // Existing bridge.json: user-set keys are merged back in (see merge.hpp)
+    const json::object existing = read_existing(output_path);
+    if (!existing.empty())
+        myio::log("[discovery] Merging into existing {} (user-set keys preserved)", output_path);
 
-    json::object root;
+    json::object root = existing;   // unknown root-level keys round-trip
     root["mqtt"] = input.mqtt;
 
     json::array servers_arr;
+    discovery::MergeReport report;
     bool any_failed = false;
 
     for (const auto& is : input.servers) {
@@ -553,6 +499,8 @@ int main(int argc, char* argv[]) {
         hcfg.password  = is.password;
         hcfg.server_id = is.id;
 
+        const json::object* old_srv = discovery::find_server(existing, is.id);
+
         try {
             const std::string body  = myio::http_get(hcfg, "/d_sens_out.json");
             const auto        state = myio::DSensOutParser::parse(body, is.id);
@@ -564,21 +512,36 @@ int main(int argc, char* argv[]) {
             myio::log("[discovery]   Protection pairs: {} → cover candidates",
                       state.protection_pairs.size());
 
-            servers_arr.push_back(
-                make_server_entry(is, state, hcfg, is.pca_default_type, enabled_map));
+            servers_arr.push_back(discovery::merge_server(
+                old_srv, make_server_entry(is, state, hcfg, is.pca_default_type), report));
 
         } catch (const std::exception& ex) {
             myio::log(stderr, "[discovery] ERROR ({}): {}", is.id, myio::short_what(ex));
             any_failed = true;
-            servers_arr.push_back(json::object{
-                {"id",     is.id},
-                {"host",   is.host},
-                {"_error", myio::short_what(ex)}
-            });
+            servers_arr.push_back(discovery::failed_server(
+                old_srv, is.id, is.host, myio::short_what(ex), report));
+        }
+    }
+
+    // Servers in the existing file that are not in the input: keep, never drop silently
+    if (const auto* old_servers = existing.if_contains("servers"); old_servers && old_servers->is_array()) {
+        for (const auto& os : old_servers->as_array()) {
+            if (!os.is_object()) continue;
+            const auto* oid = os.as_object().if_contains("id");
+            const bool listed = oid && oid->is_string() &&
+                std::ranges::any_of(input.servers, [&](const InputServer& s) {
+                    return s.id == oid->as_string();
+                });
+            if (listed) continue;
+            report.push_back(std::format("server {}: not in the input file - kept unchanged",
+                                         (oid && oid->is_string()) ? std::string(oid->as_string()) : "?"));
+            servers_arr.push_back(os);
         }
     }
 
     root["servers"] = std::move(servers_arr);
+    for (const auto& line : report)
+        myio::log("[discovery] NOTE: {}", line);
 
     std::ofstream out(output_path);
     if (!out) {

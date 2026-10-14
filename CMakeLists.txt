@@ -126,12 +126,27 @@ target_compile_definitions(bridge PRIVATE BRIDGE_VERSION="${BRIDGE_VERSION}")
 
 # ── discovery (Executable) ────────────────────────────────────────────────────
 # Service tool: queries myIO servers and generates bridge.json
+add_library(discovery_merge STATIC
+    src/discovery/merge.cpp
+)
+
+target_include_directories(discovery_merge
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/discovery
+)
+
+target_link_libraries(discovery_merge
+    PUBLIC
+        common
+)
+
 add_executable(discovery
     src/discovery/main.cpp
 )
 
 target_link_libraries(discovery
     PRIVATE
+        discovery_merge
         common
 )
 
@@ -146,6 +161,7 @@ add_executable(bridge_tests
 target_link_libraries(bridge_tests
     PRIVATE
         bridge_config
+        discovery_merge
 )
 
 add_test(NAME bridge_tests COMMAND bridge_tests)

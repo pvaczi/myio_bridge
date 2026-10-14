@@ -2,9 +2,11 @@
 
 #include "bridge_rules.hpp"
 #include "config_reader.hpp"
+#include "merge.hpp"
 
 #include <boost/json.hpp>
 
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <format>
@@ -219,6 +221,20 @@ void test_numeric_parsing() {
     CHECK(!bridge::parse_cover_command("50"));
 }
 
+void test_percent_raw_conversion() {
+    using bridge::percent_to_raw;
+    using bridge::raw_to_percent;
+    CHECK(percent_to_raw(0)   == 0);
+    CHECK(percent_to_raw(100) == 255);
+    CHECK(percent_to_raw(50)  == 128);  // round(127.5), half up
+    CHECK(raw_to_percent(0)   == 0);
+    CHECK(raw_to_percent(255) == 100);
+    for (int p = 0; p <= 100; ++p) {
+        CHECK(percent_to_raw(p) == static_cast<int>(std::lround(p * 255 / 100.0)));
+        CHECK(raw_to_percent(percent_to_raw(p)) == p);
+    }
+}
+
 void test_http_status_parsing() {
     using bridge::parse_http_status;
     CHECK(parse_http_status("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n") == std::optional<int>(200));
@@ -318,6 +334,119 @@ void test_discovery_blocks() {
     CHECK(bv.at("device").as_object().at("sw_version").as_string() == "v1.5.0");
 }
 
+// ── discovery merge ───────────────────────────────────────────────────────────
+
+namespace json = boost::json;
+
+json::object obj(std::string_view text) { return json::parse(text).as_object(); }
+
+const json::object* find_entry(const json::object& srv, const char* section, std::int64_t id) {
+    const auto* arr = srv.if_contains(section);
+    if (!arr) return nullptr;
+    for (const auto& v : arr->as_array())
+        if (v.as_object().at("id").to_number<std::int64_t>() == id) return &v.as_object();
+    return nullptr;
+}
+
+void test_discovery_merge() {
+    const auto existing = obj(R"({
+        "id": "lighting", "host": "10.0.0.5", "port": 8080, "user": "u", "password": "secret",
+        "poll_interval_sec": 9, "custom_server_key": [1, 2],
+        "pca": [
+            {"id": 2001, "name": "Old name", "type": "light", "enabled": true,
+             "writable": false, "device_class": "outlet", "x_user": "keep"},
+            {"id": 2002, "name": "Gone", "type": "switch", "enabled": true}
+        ],
+        "covers": [
+            {"id": "cover_1", "name": "Blind", "enabled": true, "motor_timeout_sec": 42,
+             "up": {"type": "relay", "id": 1, "_name": "old"}, "down": {"type": "relay", "id": 2}}
+        ]
+    })");
+    const auto fresh = obj(R"({
+        "id": "lighting", "host": "10.9.9.9", "port": 80, "user": "admin", "password": "admin",
+        "poll_interval_sec": 5, "coalesce_window_ms": 5,
+        "pca": [
+            {"id": 2001, "name": "Dev name", "type": "switch", "enabled": false, "_pwm": true},
+            {"id": 2003, "name": "New one", "type": "switch", "enabled": false}
+        ],
+        "covers": [
+            {"id": "cover_1", "name": "Blind", "enabled": false, "motor_timeout_sec": 30,
+             "up": {"type": "relay", "id": 1, "_name": "new"}, "down": {"type": "relay", "id": 2}}
+        ]
+    })");
+
+    discovery::MergeReport report;
+    const auto m = discovery::merge_server(&existing, fresh, report);
+
+    // Server-level keys: existing wins, unknown key round-trips, gaps are filled
+    CHECK(m.at("host").as_string() == "10.0.0.5");
+    CHECK(m.at("port").to_number<int>() == 8080);
+    CHECK(m.at("password").as_string() == "secret");
+    CHECK(m.at("poll_interval_sec").to_number<int>() == 9);
+    CHECK(m.at("custom_server_key").as_array().size() == 2);
+    CHECK(m.at("coalesce_window_ms").to_number<int>() == 5);
+
+    // Entry: user keys preserved, device facts refreshed
+    const auto* e1 = find_entry(m, "pca", 2001);
+    CHECK(e1 != nullptr);
+    if (e1) {
+        CHECK(e1->at("enabled").as_bool());
+        CHECK(e1->at("type").as_string() == "light");
+        CHECK(!e1->at("writable").as_bool());
+        CHECK(e1->at("device_class").as_string() == "outlet");
+        CHECK(e1->at("x_user").as_string() == "keep");
+        CHECK(e1->at("name").as_string() == "Dev name");  // name is device-derived
+        CHECK(e1->at("_pwm").as_bool());
+    }
+
+    // New output added with defaults
+    const auto* e3 = find_entry(m, "pca", 2003);
+    CHECK(e3 != nullptr && !e3->at("enabled").as_bool());
+
+    // Removed output kept and reported
+    const auto* e2 = find_entry(m, "pca", 2002);
+    CHECK(e2 != nullptr && e2->at("enabled").as_bool());
+    bool reported_gone = false, reported_new = false;
+    for (const auto& line : report) {
+        if (line.contains("2002") && line.contains("no longer")) reported_gone = true;
+        if (line.contains("2003") && line.contains("new")) reported_new = true;
+    }
+    CHECK(reported_gone);
+    CHECK(reported_new);
+
+    // Cover: motor timeout and enabled preserved, nested diagnostics refreshed
+    const auto& c = m.at("covers").as_array().at(0).as_object();
+    CHECK(c.at("enabled").as_bool());
+    CHECK(c.at("motor_timeout_sec").to_number<int>() == 42);
+    CHECK(c.at("up").as_object().at("_name").as_string() == "new");
+
+    // Section only in the existing file (device reports none now): entries kept
+    const auto only_old = obj(R"({"id":"s","relays":[{"id":7,"name":"R","enabled":true}]})");
+    const auto empty_fresh = obj(R"({"id":"s"})");
+    discovery::MergeReport r2;
+    const auto m2 = discovery::merge_server(&only_old, empty_fresh, r2);
+    CHECK(find_entry(m2, "relays", 7) != nullptr);
+    CHECK(r2.size() == 1);
+
+    // No existing config: fresh entry as is
+    discovery::MergeReport r3;
+    CHECK(discovery::merge_server(nullptr, fresh, r3) == fresh);
+
+    // Failing server: existing config unchanged, no _error stub; no existing config: stub
+    discovery::MergeReport r4;
+    const auto kept = discovery::failed_server(&existing, "lighting", "10.9.9.9", "timeout", r4);
+    CHECK(kept == existing);
+    CHECK(!kept.contains("_error"));
+    CHECK(r4.size() == 1);
+    const auto stub = discovery::failed_server(nullptr, "new", "h", "timeout", r4);
+    CHECK(stub.at("_error").as_string() == "timeout");
+
+    // find_server
+    const auto root = obj(R"({"servers":[{"id":"a"},{"id":"b","host":"h"}]})");
+    CHECK(discovery::find_server(root, "b") != nullptr);
+    CHECK(discovery::find_server(root, "zz") == nullptr);
+}
+
 } // namespace
 
 int main() {
@@ -331,11 +460,13 @@ int main() {
     test_component_mapping();
     test_on_off_parsing();
     test_numeric_parsing();
+    test_percent_raw_conversion();
     test_http_status_parsing();
     test_reserved_server_id();
     test_availability();
     test_sensor_class();
     test_discovery_blocks();
+    test_discovery_merge();
 
     std::printf("%d/%d checks passed\n", g_checks - g_failures, g_checks);
     return g_failures == 0 ? 0 : 1;
