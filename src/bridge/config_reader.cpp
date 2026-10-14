@@ -142,6 +142,9 @@ static ServerConfig parse_server(const json::object& o) {
     if (sc.server_id.empty() || sc.host.empty())
         throw std::runtime_error("Server entry requires 'id' and 'host'");
     require_topic_level("Server id", sc.server_id);
+    // <prefix>/bridge/availability is the bridge's own availability topic (LWT).
+    if (sc.server_id == "bridge")
+        throw std::runtime_error("Server id 'bridge' is reserved");
     const auto ctx = std::format("Server '{}'", sc.server_id);
     sc.port = port_or(o, "port", 80, ctx);
     // The W5100 on the myIO board has only 4 sockets: a zero/negative interval

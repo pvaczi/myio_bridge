@@ -1,9 +1,14 @@
 #include "bridge_rules.hpp"
 
+#include <boost/json/serialize.hpp>
+
 #include <charconv>
+#include <format>
 #include <string>
 
 namespace bridge {
+
+namespace json = boost::json;
 
 namespace {
 
@@ -101,6 +106,98 @@ std::optional<int> parse_http_status(std::string_view raw) {
     const int code = (line[0] - '0') * 100 + (line[1] - '0') * 10 + (line[2] - '0');
     if (code < 100) return std::nullopt;
     return code;
+}
+
+std::string bridge_availability_topic(std::string_view prefix) {
+    return std::format("{}/bridge/availability", prefix);
+}
+
+std::string server_availability_topic(std::string_view prefix, std::string_view server_id) {
+    return std::format("{}/{}/availability", prefix, server_id);
+}
+
+json::array availability_list(std::string_view prefix, std::string_view server_id) {
+    return {
+        json::object{{"topic", bridge_availability_topic(prefix)}},
+        json::object{{"topic", server_availability_topic(prefix, server_id)}},
+    };
+}
+
+SensorClass sensor_class(int id) {
+    // Id ranges as parsed in dsens_parser.cpp (and IO Valet 3.9 API doc:
+    // temperature sensor ids < 100, humidity sensor id = 100 + n).
+    if (id >= 1   && id <= 100) return {"temperature", "°C", "measurement"};
+    if (id >= 101 && id <= 108) return {"humidity",    "%",  "measurement"};
+    if (id >= 201 && id <= 203) return {"power",       "kW", "measurement"};
+    if (id >= 204 && id <= 206) return {"voltage",     "V",  "measurement"};
+    if (id >= 207 && id <= 209) return {"current",     "A",  "measurement"};
+    // 200 = impulse meter: its unit is user-defined on the device (max 5 chars)
+    // and the value is an average, not a running total → no device_class/unit.
+    return {"", "", "measurement"};
+}
+
+json::object origin_block(std::string_view bridge_version) {
+    return {
+        {"name",       "myio-bridge"},
+        {"sw_version", bridge_version},
+    };
+}
+
+json::object server_device_block(const DiscoveryContext& ctx) {
+    json::object d{
+        {"identifiers",  json::array{std::format("myio_{}", ctx.server_id)}},
+        {"name",         std::format("myIO {}", ctx.server_id)},
+        {"model",        "IO Valet"},
+        {"manufacturer", "myIO"},
+    };
+    if (!ctx.firmware_version.empty()) d["sw_version"] = ctx.firmware_version;
+    d["configuration_url"] = (ctx.port == 80)
+        ? std::format("http://{}/", ctx.host)
+        : std::format("http://{}:{}/", ctx.host, ctx.port);
+    d["via_device"] = kBridgeDeviceId;
+    return d;
+}
+
+json::object bridge_device_block(std::string_view bridge_version) {
+    return {
+        {"identifiers",  json::array{kBridgeDeviceId}},
+        {"name",         "myIO bridge"},
+        {"model",        "myio-bridge"},
+        {"manufacturer", "myio-bridge"},
+        {"sw_version",   bridge_version},
+    };
+}
+
+void add_entity_common(json::object& o, const DiscoveryContext& ctx,
+                       std::string_view component, std::string_view object_id) {
+    o["default_entity_id"] = std::format("{}.{}", component, object_id);
+    o["availability"]      = availability_list(ctx.prefix, ctx.server_id);
+    o["availability_mode"] = "all";
+    o["device"]            = server_device_block(ctx);
+    o["origin"]            = origin_block(ctx.bridge_version);
+}
+
+std::string bridge_status_discovery_topic() {
+    return std::format("homeassistant/binary_sensor/{}_connectivity/config", kBridgeDeviceId);
+}
+
+std::string make_bridge_status_discovery(std::string_view prefix,
+                                         std::string_view bridge_version) {
+    // No availability: the entity itself shows the bridge's online/offline state.
+    // name null → HA names it after the device class ("Connectivity").
+    json::object o{
+        {"name",              nullptr},
+        {"unique_id",         std::format("{}_connectivity", kBridgeDeviceId)},
+        {"default_entity_id", std::format("binary_sensor.{}_connectivity", kBridgeDeviceId)},
+        {"state_topic",       bridge_availability_topic(prefix)},
+        {"payload_on",        kAvailabilityOnline},
+        {"payload_off",       kAvailabilityOffline},
+        {"device_class",      "connectivity"},
+        {"entity_category",   "diagnostic"},
+        {"device",            bridge_device_block(bridge_version)},
+        {"origin",            origin_block(bridge_version)},
+    };
+    return json::serialize(o);
 }
 
 } // namespace bridge

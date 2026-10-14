@@ -37,11 +37,17 @@ public:
     net::awaitable<std::tuple<std::string, std::string>> async_receive() override;
     net::awaitable<void> async_disconnect()                             override;
 
+    // Last Will: published retained (QoS 1) by the broker if the connection
+    // drops without a clean disconnect. Must be set before async_connect().
+    void set_will(std::string topic, std::string payload);
+
 private:
     using client_t = mqtt5::mqtt_client<net::ip::tcp::socket>;
 
     config::MqttConfig cfg_;
     client_t           client_;
+    std::string        will_topic_;    // "" = no Will
+    std::string        will_payload_;
 };
 
 } // namespace ha

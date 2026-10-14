@@ -3,6 +3,8 @@
 #include "bridge_rules.hpp"
 #include "config_reader.hpp"
 
+#include <boost/json.hpp>
+
 #include <cstdio>
 #include <exception>
 #include <format>
@@ -234,6 +236,88 @@ void test_http_status_parsing() {
     CHECK(!parse_http_status("garbage\r\nContent-Length: 200\r\n"));
 }
 
+void test_reserved_server_id() {
+    CHECK(rejected_with(R"({"servers":[{"id":"bridge","host":"h"}]})", "reserved"));
+}
+
+void test_availability() {
+    CHECK(bridge::bridge_availability_topic("myio") == "myio/bridge/availability");
+    CHECK(bridge::server_availability_topic("myio", "lighting") == "myio/lighting/availability");
+
+    const auto list = bridge::availability_list("myio", "lighting");
+    CHECK(list.size() == 2);
+    CHECK(list[0].as_object().at("topic").as_string() == "myio/bridge/availability");
+    CHECK(list[1].as_object().at("topic").as_string() == "myio/lighting/availability");
+}
+
+void test_sensor_class() {
+    using bridge::sensor_class;
+    CHECK(sensor_class(1).device_class   == "temperature" && sensor_class(1).unit   == "°C");
+    CHECK(sensor_class(100).device_class == "temperature");
+    CHECK(sensor_class(101).device_class == "humidity"    && sensor_class(101).unit == "%");
+    CHECK(sensor_class(108).device_class == "humidity");
+    CHECK(sensor_class(201).device_class == "power"       && sensor_class(201).unit == "kW");
+    CHECK(sensor_class(204).device_class == "voltage"     && sensor_class(206).unit == "V");
+    CHECK(sensor_class(207).device_class == "current"     && sensor_class(209).unit == "A");
+    // Impulse meter and unknown ids: numeric, but no device_class / unit.
+    for (const int id : {109, 200, 210, 0}) {
+        CHECK(sensor_class(id).device_class.empty());
+        CHECK(sensor_class(id).unit.empty());
+    }
+    for (const int id : {1, 101, 200, 203, 205, 208, 500})
+        CHECK(sensor_class(id).state_class == "measurement");
+}
+
+void test_discovery_blocks() {
+    namespace json = boost::json;
+    bridge::DiscoveryContext ctx;
+    ctx.prefix         = "myio";
+    ctx.server_id      = "lighting";
+    ctx.host           = "10.0.0.5";
+    ctx.port           = 80;
+    ctx.bridge_version = "v1.5.0";
+
+    // Unknown firmware: no sw_version; default port: no port in the URL.
+    auto dev = bridge::server_device_block(ctx);
+    CHECK(dev.at("identifiers").as_array().at(0).as_string() == "myio_lighting");
+    CHECK(dev.at("name").as_string() == "myIO lighting");
+    CHECK(!dev.contains("sw_version"));
+    CHECK(dev.at("configuration_url").as_string() == "http://10.0.0.5/");
+    CHECK(dev.at("via_device").as_string() == "myio_bridge");
+
+    ctx.firmware_version = "3.9";
+    ctx.port             = 8080;
+    dev = bridge::server_device_block(ctx);
+    CHECK(dev.at("sw_version").as_string() == "3.9");
+    CHECK(dev.at("configuration_url").as_string() == "http://10.0.0.5:8080/");
+
+    const auto origin = bridge::origin_block("v1.5.0");
+    CHECK(origin.at("name").as_string() == "myio-bridge");
+    CHECK(origin.at("sw_version").as_string() == "v1.5.0");
+
+    json::object o;
+    bridge::add_entity_common(o, ctx, "light", "myio_lighting_pca_2001");
+    CHECK(o.at("default_entity_id").as_string() == "light.myio_lighting_pca_2001");
+    CHECK(o.at("availability_mode").as_string() == "all");
+    CHECK(o.at("availability").as_array().size() == 2);
+    CHECK(o.at("device").as_object().at("via_device").as_string() == "myio_bridge");
+    CHECK(o.at("origin").as_object().at("sw_version").as_string() == "v1.5.0");
+
+    // Bridge device: registered via its connectivity entity; it must not depend
+    // on its own availability, and its identifier is every via_device target.
+    CHECK(bridge::bridge_status_discovery_topic() ==
+          "homeassistant/binary_sensor/myio_bridge_connectivity/config");
+    const auto bv = json::parse(bridge::make_bridge_status_discovery("myio", "v1.5.0")).as_object();
+    CHECK(bv.at("state_topic").as_string() == "myio/bridge/availability");
+    CHECK(bv.at("payload_on").as_string() == "online");
+    CHECK(bv.at("payload_off").as_string() == "offline");
+    CHECK(bv.at("device_class").as_string() == "connectivity");
+    CHECK(bv.at("entity_category").as_string() == "diagnostic");
+    CHECK(!bv.contains("availability"));
+    CHECK(bv.at("device").as_object().at("identifiers").as_array().at(0).as_string() == "myio_bridge");
+    CHECK(bv.at("device").as_object().at("sw_version").as_string() == "v1.5.0");
+}
+
 } // namespace
 
 int main() {
@@ -248,6 +332,10 @@ int main() {
     test_on_off_parsing();
     test_numeric_parsing();
     test_http_status_parsing();
+    test_reserved_server_id();
+    test_availability();
+    test_sensor_class();
+    test_discovery_blocks();
 
     std::printf("%d/%d checks passed\n", g_checks - g_failures, g_checks);
     return g_failures == 0 ? 0 : 1;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "bridge_rules.hpp"
 #include "config_types.hpp"
 #include "IHAPublisher.hpp"
 #include "IMyIOClient.hpp"
@@ -45,23 +46,17 @@ std::string number_state_topic   (const std::string& prefix, const std::string& 
 std::string light_percent_topic  (const std::string& prefix, const std::string& srv, int id);
 
 // ── HA MQTT discovery JSON builders ──────────────────────────────────────────
+// ctx carries the topic prefix, server id and the shared device/origin inputs.
 
-std::string make_switch_discovery(const std::string& prefix, const std::string& srv,
-                                   const config::PcaConfig& e);
-std::string make_switch_discovery(const std::string& prefix, const std::string& srv,
-                                   const config::RelayConfig& e);
-std::string make_light_discovery (const std::string& prefix, const std::string& srv,
-                                   const config::PcaConfig& e, bool brightness);
-std::string make_light_discovery (const std::string& prefix, const std::string& srv,
-                                   const config::PwmConfig& e);
-std::string make_number_discovery(const std::string& prefix, const std::string& srv,
-                                   const config::PcaConfig& e);
-std::string make_number_discovery(const std::string& prefix, const std::string& srv,
-                                   const config::PwmConfig& e);
-std::string make_cover_discovery (const std::string& prefix, const std::string& srv,
-                                   const config::CoverConfig& c);
-std::string make_sensor_discovery(const std::string& prefix, const std::string& srv,
-                                   const config::SensorConfig& s);
+std::string make_switch_discovery(const DiscoveryContext& ctx, const config::PcaConfig& e);
+std::string make_switch_discovery(const DiscoveryContext& ctx, const config::RelayConfig& e);
+std::string make_light_discovery (const DiscoveryContext& ctx, const config::PcaConfig& e,
+                                   bool brightness);
+std::string make_light_discovery (const DiscoveryContext& ctx, const config::PwmConfig& e);
+std::string make_number_discovery(const DiscoveryContext& ctx, const config::PcaConfig& e);
+std::string make_number_discovery(const DiscoveryContext& ctx, const config::PwmConfig& e);
+std::string make_cover_discovery (const DiscoveryContext& ctx, const config::CoverConfig& c);
+std::string make_sensor_discovery(const DiscoveryContext& ctx, const config::SensorConfig& s);
 
 // ── ServerBridge – manages one myIO server ────────────────────────────────────
 
@@ -137,6 +132,27 @@ private:
 
     bool should_log_now() const { return !syncing_ || cfg_.log_startup_sync; }
 
+    // Prefix, server id, host and the known firmware/bridge versions for the
+    // discovery builders.
+    DiscoveryContext discovery_context() const;
+
+    // Discovery config of an enabled, writable PCA output for its component
+    // (light dimmability taken from pca_is_pwm_).
+    std::string pca_discovery_payload(const config::PcaConfig& e,
+                                      std::string_view component) const;
+
+    // GET /info.json: logs the server info and stores firmware_version_.
+    // Returns false (error in last_info_error_) on failure.
+    net::awaitable<bool> fetch_server_info();
+
+    // Records the pwm flags of a poll; re-sends the light discovery of every
+    // enabled writable PCA light whose dimmability became known or changed.
+    net::awaitable<void> update_pca_capabilities(const myio::ServerState& state);
+
+    // Publishes the server availability (retained) when it differs from the
+    // last successfully published value (or nothing was published yet).
+    net::awaitable<void> update_availability(bool online);
+
     config::ServerConfig                cfg_;
     std::string                         topic_prefix_;
     std::shared_ptr<ha::IHAPublisher>   publisher_;
@@ -160,8 +176,22 @@ private:
     std::unordered_map<int, int>                    last_cover_dir_;     // -(up.id) → +1=up, -1=down
     std::unordered_map<int, std::shared_ptr<bool>> last_cover_cancel_;  // -(up.id) → motor timeout cancel flag
 
-    // Hardware capability cache (populated once at startup from initial poll)
-    std::unordered_map<int, bool>   pca_is_pwm_;        // id → pwm flag (hardware, never changes)
+    // Hardware capability cache: filled by the discovery's capability poll and
+    // kept up to date from every regular poll (a failed first poll must not
+    // leave dimmable lights non-dimmable).
+    std::unordered_map<int, bool>   pca_is_pwm_;        // id → pwm flag
+
+    // From /info.json, fetched before the first discovery, else by poll_loop;
+    // "" until a fetch succeeded.
+    std::string firmware_version_;
+    std::string last_info_error_;
+    // Set when poll_loop starts: from then on only the poll loop talks HTTP to
+    // the device (discovery must not run requests in parallel with it).
+    bool poll_started_ = false;
+    // Last successfully published server availability; nullopt = republish.
+    std::optional<bool> published_available_;
+    // Covers whose retained state was seeded ("stopped"/50) on the first discovery.
+    std::unordered_set<std::string> seeded_covers_;
 
     std::string last_poll_error_;
     bool        syncing_ = false;   // true during startup/resync poll — tags log lines as [startup sync]
@@ -179,18 +209,42 @@ public:
     // Returns when the io_context stops.
     net::awaitable<void> run();
 
+    // Clean shutdown: publishes the bridge "offline" availability (the Will is
+    // not sent on a normal disconnect), then disconnects from the broker.
+    net::awaitable<void> shutdown();
+
+    // True once a stop was requested (signal handler / shutdown()): errors
+    // caused by the shutdown itself (aborted MQTT operations) are not failures.
+    bool is_stopping() const { return stopping_; }
+    void request_stop() { stopping_ = true; }
+
 private:
     // Receives MQTT commands and dispatches to the appropriate ServerBridge
     net::awaitable<void> command_loop();
+
+    // Publishes the bridge's own discovery (connectivity entity) and then every
+    // server's discovery concurrently. The bridge device goes first: it is the
+    // via_device of every server device.
+    net::awaitable<void> publish_all_discovery();
 
     // Builds one no-arg coroutine per server that (re)publishes its discovery
     // config, so callers can fan them out concurrently instead of one at a time.
     std::vector<std::function<net::awaitable<void>()>> discovery_tasks();
 
+    // Retained "online" on the bridge availability topic; errors are logged.
+    net::awaitable<void> publish_bridge_online();
+
+    // HA birth message: re-sends discovery after a random 1–10 s delay in a
+    // detached coroutine, so command processing is not blocked; births that
+    // arrive while one is pending are coalesced into it.
+    void schedule_birth_discovery();
+
     config::BridgeConfig                       cfg_;
     net::io_context&                           ioc_;
     std::shared_ptr<ha::IHAPublisher>          publisher_;
     std::vector<std::unique_ptr<ServerBridge>> servers_;
+    bool                                       birth_discovery_pending_ = false;
+    bool                                       stopping_ = false;
 };
 
 } // namespace bridge

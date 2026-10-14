@@ -6,7 +6,9 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/signal_set.hpp>
+#include <boost/asio/steady_timer.hpp>
 
+#include <chrono>
 #include <memory>
 #include <print>
 #include <stdexcept>
@@ -42,26 +44,38 @@ int main(int argc, char* argv[]) {
     boost::asio::io_context ioc;
 
     auto publisher = std::make_shared<ha::MQTT5Publisher>(ioc, cfg.mqtt);
+    publisher->set_will(bridge::bridge_availability_topic(cfg.mqtt.topic_prefix),
+                        std::string(bridge::kAvailabilityOffline));
     bridge::Bridge br(cfg, ioc, publisher);
 
-    // Handle Ctrl+C / SIGTERM gracefully
-    boost::asio::signal_set signals(ioc, SIGINT, SIGTERM);
+    // Handle Ctrl+C / SIGTERM gracefully: publish "offline" and disconnect,
+    // but never wait longer than the guard for an unreachable broker.
+    boost::asio::signal_set   signals(ioc, SIGINT, SIGTERM);
+    boost::asio::steady_timer shutdown_guard(ioc);
     signals.async_wait([&](auto, auto) {
         std::println();
         myio::log("[bridge] Shutting down...");
-        ioc.stop();
+        // Set before anything is aborted: run()'s completion must not report
+        // the stop as a fatal error.
+        br.request_stop();
+        shutdown_guard.expires_after(std::chrono::seconds(3));
+        shutdown_guard.async_wait([&ioc](auto) { ioc.stop(); });
+        boost::asio::co_spawn(ioc, br.shutdown(),
+            [&ioc](std::exception_ptr) { ioc.stop(); });
     });
 
     // run() never returns normally (its command loop is endless), so any
     // completion is fatal: stop the io_context and exit nonzero, otherwise the
     // poll/worker coroutines keep the process alive as a zombie and systemd
-    // (Restart=on-failure) never restarts it.
+    // (Restart=on-failure) never restarts it. Exception: a requested stop
+    // (SIGINT/SIGTERM) — the shutdown handler stops the io_context itself.
     int exit_code = 0;
     boost::asio::co_spawn(ioc,
         [&br]() -> boost::asio::awaitable<void> {
             co_await br.run();
         },
-        [&ioc, &exit_code](std::exception_ptr ep) {
+        [&ioc, &exit_code, &br](std::exception_ptr ep) {
+            if (br.is_stopping()) return;
             if (ep) {
                 try { std::rethrow_exception(ep); }
                 catch (const std::exception& ex) {

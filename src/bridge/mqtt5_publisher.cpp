@@ -20,6 +20,11 @@ MQTT5Publisher::MQTT5Publisher(net::io_context& ioc, config::MqttConfig cfg)
     , client_(ioc.get_executor())
 {}
 
+void MQTT5Publisher::set_will(std::string topic, std::string payload) {
+    will_topic_   = std::move(topic);
+    will_payload_ = std::move(payload);
+}
+
 // ── Connect ───────────────────────────────────────────────────────────────────
 
 net::awaitable<void> MQTT5Publisher::async_connect() {
@@ -27,6 +32,11 @@ net::awaitable<void> MQTT5Publisher::async_connect() {
 
     if (!cfg_.user.empty())
         client_.credentials(cfg_.client_id, cfg_.user, cfg_.password);
+
+    // Sent in every CONNECT, so it also covers the automatic reconnects.
+    if (!will_topic_.empty())
+        client_.will(mqtt5::will{will_topic_, will_payload_,
+                                 mqtt5::qos_e::at_least_once, mqtt5::retain_e::yes});
 
     // async_run maintains the connection and handles automatic reconnection.
     // It does not block the caller.

@@ -16,8 +16,13 @@
 #include <chrono>
 #include <format>
 #include <limits>
+#include <random>
 #include <ranges>
 #include <string>
+
+#ifndef BRIDGE_VERSION
+#define BRIDGE_VERSION "dev"
+#endif
 
 namespace bridge {
 
@@ -69,18 +74,12 @@ std::string light_percent_topic(const std::string& p, const std::string& s, int 
 // ── HA discovery JSON helpers ─────────────────────────────────────────────────
 // No "retain" key in any config: it sets the retain flag of the COMMANDS that
 // HA publishes, and a retained /set would be replayed as a command later.
+// Every entity gets the shared blocks of add_entity_common (device, origin,
+// availability, default_entity_id = "<component>.<unique_id>").
 
-static json::object device_info(const std::string& srv_id) {
-    return {
-        {"identifiers", json::array{std::format("myio_{}", srv_id)}},
-        {"name",        std::format("myIO {}", srv_id)},
-        {"model",       "IO Valet"},
-        {"manufacturer","myIO"}
-    };
-}
-
-std::string make_switch_discovery(const std::string& p, const std::string& s,
-                                   const config::PcaConfig& e) {
+std::string make_switch_discovery(const DiscoveryContext& ctx, const config::PcaConfig& e) {
+    const auto& p = ctx.prefix;
+    const auto& s = ctx.server_id;
     const std::string uid  = std::format("myio_{}_pca_{}", s, e.id);
     const std::string base = std::format("{}/{}/switch/{}", p, s, e.id);
     json::object o;
@@ -90,12 +89,13 @@ std::string make_switch_discovery(const std::string& p, const std::string& s,
     o["command_topic"] = base + "/set";
     o["payload_on"]    = "ON";
     o["payload_off"]   = "OFF";
-    o["device"]        = device_info(s);
+    add_entity_common(o, ctx, "switch", uid);
     return json::serialize(o);
 }
 
-std::string make_switch_discovery(const std::string& p, const std::string& s,
-                                   const config::RelayConfig& e) {
+std::string make_switch_discovery(const DiscoveryContext& ctx, const config::RelayConfig& e) {
+    const auto& p = ctx.prefix;
+    const auto& s = ctx.server_id;
     const std::string uid  = std::format("myio_{}_relay_{}", s, e.id);
     const std::string base = std::format("{}/{}/switch/{}", p, s, e.id);
     json::object o;
@@ -105,12 +105,14 @@ std::string make_switch_discovery(const std::string& p, const std::string& s,
     o["command_topic"] = base + "/set";
     o["payload_on"]    = "ON";
     o["payload_off"]   = "OFF";
-    o["device"]        = device_info(s);
+    add_entity_common(o, ctx, "switch", uid);
     return json::serialize(o);
 }
 
-std::string make_light_discovery(const std::string& p, const std::string& s,
-                                  const config::PcaConfig& e, bool brightness) {
+std::string make_light_discovery(const DiscoveryContext& ctx, const config::PcaConfig& e,
+                                  bool brightness) {
+    const auto& p = ctx.prefix;
+    const auto& s = ctx.server_id;
     const std::string uid  = std::format("myio_{}_pca_{}", s, e.id);
     const std::string base = std::format("{}/{}/light/{}", p, s, e.id);
     json::object o;
@@ -125,12 +127,13 @@ std::string make_light_discovery(const std::string& p, const std::string& s,
     }
     o["payload_on"]  = "ON";
     o["payload_off"] = "OFF";
-    o["device"]      = device_info(s);
+    add_entity_common(o, ctx, "light", uid);
     return json::serialize(o);
 }
 
-std::string make_light_discovery(const std::string& p, const std::string& s,
-                                  const config::PwmConfig& e) {
+std::string make_light_discovery(const DiscoveryContext& ctx, const config::PwmConfig& e) {
+    const auto& p = ctx.prefix;
+    const auto& s = ctx.server_id;
     const std::string uid  = std::format("myio_{}_pwm_{}", s, e.id);
     const std::string base = std::format("{}/{}/light/{}", p, s, e.id);
     json::object o;
@@ -143,12 +146,13 @@ std::string make_light_discovery(const std::string& p, const std::string& s,
     o["brightness_scale"]         = 255;
     o["payload_on"]               = "ON";
     o["payload_off"]              = "OFF";
-    o["device"]                   = device_info(s);
+    add_entity_common(o, ctx, "light", uid);
     return json::serialize(o);
 }
 
-std::string make_number_discovery(const std::string& p, const std::string& s,
-                                    const config::PcaConfig& e) {
+std::string make_number_discovery(const DiscoveryContext& ctx, const config::PcaConfig& e) {
+    const auto& p = ctx.prefix;
+    const auto& s = ctx.server_id;
     const std::string uid  = std::format("myio_{}_pca_{}", s, e.id);
     const std::string base = std::format("{}/{}/number/{}", p, s, e.id);
     json::object o;
@@ -160,12 +164,13 @@ std::string make_number_discovery(const std::string& p, const std::string& s,
     o["max"]                 = 100;
     o["step"]                = 1;
     o["unit_of_measurement"] = "%";
-    o["device"]              = device_info(s);
+    add_entity_common(o, ctx, "number", uid);
     return json::serialize(o);
 }
 
-std::string make_number_discovery(const std::string& p, const std::string& s,
-                                    const config::PwmConfig& e) {
+std::string make_number_discovery(const DiscoveryContext& ctx, const config::PwmConfig& e) {
+    const auto& p = ctx.prefix;
+    const auto& s = ctx.server_id;
     const std::string uid  = std::format("myio_{}_pwm_{}", s, e.id);
     const std::string base = std::format("{}/{}/number/{}", p, s, e.id);
     json::object o;
@@ -177,12 +182,13 @@ std::string make_number_discovery(const std::string& p, const std::string& s,
     o["max"]                 = 100;
     o["step"]                = 1;
     o["unit_of_measurement"] = "%";
-    o["device"]              = device_info(s);
+    add_entity_common(o, ctx, "number", uid);
     return json::serialize(o);
 }
 
-std::string make_cover_discovery(const std::string& p, const std::string& s,
-                                  const config::CoverConfig& c) {
+std::string make_cover_discovery(const DiscoveryContext& ctx, const config::CoverConfig& c) {
+    const auto& p = ctx.prefix;
+    const auto& s = ctx.server_id;
     const std::string uid  = std::format("myio_{}_cover_{}", s, c.cover_id);
     const std::string base = std::format("{}/{}/cover/{}", p, s, c.cover_id);
     json::object o;
@@ -200,23 +206,21 @@ std::string make_cover_discovery(const std::string& p, const std::string& s,
     o["state_opening"] = "opening";
     o["state_closing"] = "closing";
     o["state_stopped"] = "stopped";
-    o["device"]        = device_info(s);
+    add_entity_common(o, ctx, "cover", uid);
     return json::serialize(o);
 }
 
-std::string make_sensor_discovery(const std::string& p, const std::string& s,
-                                   const config::SensorConfig& sen) {
-    const std::string uid = std::format("myio_{}_sensor_{}", s, sen.id);
+std::string make_sensor_discovery(const DiscoveryContext& ctx, const config::SensorConfig& sen) {
+    const std::string uid = std::format("myio_{}_sensor_{}", ctx.server_id, sen.id);
     json::object o;
     o["name"]        = sen.name.empty() ? uid : sen.name;
     o["unique_id"]   = uid;
-    o["state_topic"] = sensor_state_topic(p, s, sen.id);
-    if (sen.id >= 1   && sen.id <= 100) o["unit_of_measurement"] = "°C";
-    if (sen.id >= 101 && sen.id <= 108) o["unit_of_measurement"] = "%";
-    if (sen.id >= 201 && sen.id <= 203) o["unit_of_measurement"] = "kW";
-    if (sen.id >= 204 && sen.id <= 206) o["unit_of_measurement"] = "V";
-    if (sen.id >= 207 && sen.id <= 209) o["unit_of_measurement"] = "A";
-    o["device"] = device_info(s);
+    o["state_topic"] = sensor_state_topic(ctx.prefix, ctx.server_id, sen.id);
+    const auto cls = sensor_class(sen.id);
+    if (!cls.device_class.empty()) o["device_class"]        = cls.device_class;
+    if (!cls.unit.empty())         o["unit_of_measurement"] = cls.unit;
+    o["state_class"] = cls.state_class;
+    add_entity_common(o, ctx, "sensor", uid);
     return json::serialize(o);
 }
 
@@ -259,8 +263,10 @@ static std::vector<std::string_view> candidate_components(OutputKind kind) {
 // Discovery config of a read-only (writable: false) output: no command_topic.
 // binary_sensor reads the ON/OFF switch state topic, sensor a percentage.
 template <typename Output>
-static std::string make_readonly_discovery(const std::string& p, const std::string& s,
+static std::string make_readonly_discovery(const DiscoveryContext& ctx,
                                            OutputKind kind, const Output& e) {
+    const auto& p = ctx.prefix;
+    const auto& s = ctx.server_id;
     const auto component = ha_component(kind, e.type, false);
     const std::string uid = std::format("myio_{}_{}_{}", s, kind_name(kind), e.id);
     json::object o;
@@ -277,7 +283,7 @@ static std::string make_readonly_discovery(const std::string& p, const std::stri
             : light_percent_topic(p, s, e.id);
         o["unit_of_measurement"] = "%";
     }
-    o["device"] = device_info(s);
+    add_entity_common(o, ctx, component, uid);
     return json::serialize(o);
 }
 
@@ -420,13 +426,64 @@ const config::CoverConfig* ServerBridge::find_cover_by_output(int output_id) con
 // Cover endpoint types (cover_up/cover_down) are never published as standalone
 // entities regardless of enabled flag.
 
+DiscoveryContext ServerBridge::discovery_context() const {
+    DiscoveryContext ctx;
+    ctx.prefix           = topic_prefix_;
+    ctx.server_id        = cfg_.server_id;
+    ctx.host             = cfg_.host;
+    ctx.port             = cfg_.port;
+    ctx.firmware_version = firmware_version_;
+    ctx.bridge_version   = BRIDGE_VERSION;
+    return ctx;
+}
+
+std::string ServerBridge::pca_discovery_payload(const config::PcaConfig& e,
+                                                std::string_view component) const {
+    const auto ctx = discovery_context();
+    if (!e.writable)          return make_readonly_discovery(ctx, OutputKind::Pca, e);
+    if (component == "light") {
+        const bool can_dim = pca_is_pwm_.count(e.id) && pca_is_pwm_.at(e.id);
+        return make_light_discovery(ctx, e, can_dim);
+    }
+    if (component == "number") return make_number_discovery(ctx, e);
+    return make_switch_discovery(ctx, e);
+}
+
+net::awaitable<bool> ServerBridge::fetch_server_info() {
+    try {
+        const auto info = co_await client_->async_get_info();
+        myio::log("[{}] myIO v{} | {} | serial {} | {} relays, {} PCA | API v{}",
+                  cfg_.server_id, info.version, info.cpu, info.serial,
+                  info.relay_count, info.pca_count, info.api);
+        firmware_version_ = info.version;
+        co_return true;
+    } catch (const std::exception& ex) {
+        last_info_error_ = myio::short_what(ex);
+    }
+    co_return false;
+}
+
 net::awaitable<void> ServerBridge::publish_discovery() {
     const auto& p = topic_prefix_;
     const auto& s = cfg_.server_id;
 
+    // HTTP to the device only on the first discovery, before poll_loop starts
+    // (sequential): later discoveries (HA birth, reconnect) would run in
+    // parallel with the poll loop's requests, and the W5100 has only 4 sockets.
+    // From then on poll_loop owns the device traffic: it keeps pca_is_pwm_
+    // current and fetches a still-missing firmware version itself.
+    const bool may_query_device = !poll_started_;
+
+    // Firmware version for the device block — fetched before the first
+    // discovery so it already carries it; without it the discovery still goes
+    // out (no sw_version).
+    if (may_query_device && firmware_version_.empty() && !(co_await fetch_server_info()))
+        myio::log(stderr, "[{}] Server info unavailable: {}", s, last_info_error_);
+    const auto ctx = discovery_context();
+
     // Fetch initial state to determine PCA hardware capabilities (pwm flag).
-    // pca_is_pwm_ is a one-time cache — the pwm flag is a hardware property that never changes.
-    if (pca_is_pwm_.empty()) {
+    // Only while nothing is known yet; afterwards every poll keeps it current.
+    if (may_query_device && pca_is_pwm_.empty()) {
         try {
             const auto state = co_await client_->async_poll();
             for (const auto& pca : state.pca_outputs)
@@ -455,34 +512,30 @@ net::awaitable<void> ServerBridge::publish_discovery() {
     // old entity as an orphan; clearing a never-used topic is harmless), then
     // publish the current config, or "" (undiscovery) when disabled.
     // component "" = cover endpoint: only represented by its cover entity.
+    // The payload is built only after the awaited clears: a concurrent poll may
+    // have updated pca_is_pwm_ (and re-sent the light discovery) meanwhile, and a
+    // payload built earlier would overwrite that with a stale one.
+    // No make_payload = disabled (undiscovery).
     auto publish_output = [&](OutputKind kind, int id, std::string_view component,
-                              std::string payload) -> net::awaitable<void> {
+                              std::function<std::string()> make_payload)
+        -> net::awaitable<void> {
         const std::string current = component.empty()
             ? std::string() : output_discovery_topic(s, kind, id, component);
         for (const auto c : candidate_components(kind)) {
             const std::string stale = output_discovery_topic(s, kind, id, c);
             if (stale != current) co_await publish(stale, "");
         }
-        if (!current.empty()) co_await publish(current, payload);
+        if (!current.empty())
+            co_await publish(current, make_payload ? make_payload() : std::string());
     };
 
     for (const auto& e : cfg_.pca) {
         const std::string_view component = is_cover_endpoint(cfg_.covers, OutputKind::Pca, e.id)
             ? std::string_view{} : ha_component(OutputKind::Pca, e.type, e.writable);
-        std::string payload;
-        if (e.enabled && !component.empty()) {
-            if (!e.writable) {
-                payload = make_readonly_discovery(p, s, OutputKind::Pca, e);
-            } else if (component == "light") {
-                const bool can_dim = pca_is_pwm_.count(e.id) && pca_is_pwm_.at(e.id);
-                payload = make_light_discovery(p, s, e, can_dim);
-            } else if (component == "number") {
-                payload = make_number_discovery(p, s, e);
-            } else {
-                payload = make_switch_discovery(p, s, e);
-            }
-        }
-        co_await publish_output(OutputKind::Pca, e.id, component, std::move(payload));
+        std::function<std::string()> make_payload;
+        if (e.enabled && !component.empty())
+            make_payload = [&] { return pca_discovery_payload(e, component); };
+        co_await publish_output(OutputKind::Pca, e.id, component, std::move(make_payload));
     }
 
     for (const auto& e : cfg_.relays) {
@@ -490,34 +543,44 @@ net::awaitable<void> ServerBridge::publish_discovery() {
             ? std::string_view{} : ha_component(OutputKind::Relay, e.type, e.writable);
         std::string payload;
         if (e.enabled && !component.empty())
-            payload = e.writable ? make_switch_discovery(p, s, e)
-                                 : make_readonly_discovery(p, s, OutputKind::Relay, e);
-        co_await publish_output(OutputKind::Relay, e.id, component, std::move(payload));
+            payload = e.writable ? make_switch_discovery(ctx, e)
+                                 : make_readonly_discovery(ctx, OutputKind::Relay, e);
+        co_await publish_output(OutputKind::Relay, e.id, component,
+                                [&payload] { return payload; });
     }
 
     for (const auto& e : cfg_.pwm) {
         const auto component = ha_component(OutputKind::Pwm, e.type, e.writable);
         std::string payload;
         if (e.enabled && !component.empty()) {
-            if (!e.writable)                payload = make_readonly_discovery(p, s, OutputKind::Pwm, e);
-            else if (component == "number") payload = make_number_discovery(p, s, e);
-            else                            payload = make_light_discovery(p, s, e);
+            if (!e.writable)                payload = make_readonly_discovery(ctx, OutputKind::Pwm, e);
+            else if (component == "number") payload = make_number_discovery(ctx, e);
+            else                            payload = make_light_discovery(ctx, e);
         }
-        co_await publish_output(OutputKind::Pwm, e.id, component, std::move(payload));
+        co_await publish_output(OutputKind::Pwm, e.id, component,
+                                [&payload] { return payload; });
     }
 
     for (const auto& e : cfg_.sensors) {
         const std::string dtopic = sensor_discovery_topic(s, e);
-        co_await publish(dtopic, e.enabled ? make_sensor_discovery(p, s, e) : std::string());
+        co_await publish(dtopic, e.enabled ? make_sensor_discovery(ctx, e) : std::string());
     }
 
     for (const auto& c : cfg_.covers) {
         const std::string dtopic = cover_discovery_topic(s, c);
         if (c.enabled) {
-            co_await publish(dtopic, make_cover_discovery(p, s, c));
-            // Reset any stale retained state (e.g. "open"/"closed" from a previous run)
-            co_await publish(cover_state_topic(p, s, c.cover_id), "stopped");
-            co_await publish(cover_position_topic(p, s, c.cover_id), "50");
+            co_await publish(dtopic, make_cover_discovery(ctx, c));
+            // First discovery only: reset any stale retained state (e.g.
+            // "open"/"closed" from a previous run). Never on a re-send (HA
+            // restart, reconnect): that would overwrite the live state.
+            // Re-checked right before each seed publish: a poll may publish the
+            // real state while an earlier publish is in flight.
+            const int before = failures;
+            if (!seeded_covers_.contains(c.cover_id))
+                co_await publish(cover_state_topic(p, s, c.cover_id), "stopped");
+            if (!seeded_covers_.contains(c.cover_id))
+                co_await publish(cover_position_topic(p, s, c.cover_id), "50");
+            if (failures == before) seeded_covers_.insert(c.cover_id);
         } else {
             co_await publish(dtopic, "");
         }
@@ -594,6 +657,10 @@ net::awaitable<void> ServerBridge::publish_relay_state(const myio::RelayOutput& 
 
 net::awaitable<void> ServerBridge::publish_cover_state(const config::CoverConfig& cover,
                                                          int up_state, int down_state, int dir_hint) {
+    // A real state is about to go to the broker: a discovery must not seed over
+    // it. Marked before the awaits, so a seed racing these publishes sees it; on
+    // failure the unchanged poll cache retries the real state anyway.
+    seeded_covers_.insert(cover.cover_id);
     std::string state;
     if      (up_state > 0 && down_state == 0) state = "opening";
     else if (down_state > 0 && up_state == 0) state = "closing";
@@ -672,8 +739,58 @@ void ServerBridge::schedule_resync() {
     for (auto& [id, v] : last_pwm_state_)   v = -1;
     for (auto& [id, v] : last_sensor_val_)        v = std::numeric_limits<double>::max();
     for (auto& [id, v] : last_sensor_logged_val_) v = std::numeric_limits<double>::max();
+    published_available_.reset();  // republish the server availability too
     syncing_ = true;
     myio::log("[{}] Broker reconnected – resync scheduled.", cfg_.server_id);
+}
+
+// ── Availability ──────────────────────────────────────────────────────────────
+
+net::awaitable<void> ServerBridge::update_availability(bool online) {
+    if (published_available_ == online) co_return;
+    try {
+        co_await publisher_->async_publish(
+            server_availability_topic(topic_prefix_, cfg_.server_id),
+            online ? kAvailabilityOnline : kAvailabilityOffline, true);
+        published_available_ = online;
+        myio::log("[{}] [bridge to broker] Availability → {}", cfg_.server_id,
+                  online ? kAvailabilityOnline : kAvailabilityOffline);
+    } catch (const std::exception& ex) {
+        // Cache unchanged → retried after the next poll.
+        myio::log(stderr, "[{}] Availability publish failed: {}",
+                  cfg_.server_id, myio::short_what(ex));
+    }
+}
+
+// ── PCA capabilities ──────────────────────────────────────────────────────────
+
+net::awaitable<void> ServerBridge::update_pca_capabilities(const myio::ServerState& state) {
+    std::vector<int> changed;
+    for (const auto& pca : state.pca_outputs) {
+        const auto it = pca_is_pwm_.find(pca.id);
+        if (it != pca_is_pwm_.end() && it->second == pca.is_pwm) continue;
+        pca_is_pwm_[pca.id] = pca.is_pwm;
+        changed.push_back(pca.id);
+    }
+
+    for (const auto& e : cfg_.pca) {
+        if (!e.enabled || !e.writable || !std::ranges::contains(changed, e.id)) continue;
+        if (is_cover_endpoint(cfg_.covers, OutputKind::Pca, e.id)) continue;
+        const auto component = ha_component(OutputKind::Pca, e.type, e.writable);
+        if (component != "light") continue;
+        try {
+            co_await publisher_->async_publish(
+                output_discovery_topic(cfg_.server_id, OutputKind::Pca, e.id, component),
+                pca_discovery_payload(e, component), true);
+            myio::log("[{}] PCA {} ({}) dimmable={} – light discovery re-sent.",
+                      cfg_.server_id, e.id, e.name, pca_is_pwm_.at(e.id));
+        } catch (const std::exception& ex) {
+            // Forget the flag so the next poll detects the change and retries.
+            pca_is_pwm_.erase(e.id);
+            myio::log(stderr, "[{}] PCA {} light discovery re-send failed: {}",
+                      cfg_.server_id, e.id, myio::short_what(ex));
+        }
+    }
 }
 
 // ── Poll loop ─────────────────────────────────────────────────────────────────
@@ -703,15 +820,10 @@ net::awaitable<void> ServerBridge::poll_loop() {
             cover_map[c.down.id] = &c;
         }
 
-    try {
-        const auto info = co_await client_->async_get_info();
-        myio::log("[{}] myIO v{} | {} | serial {} | {} relays, {} PCA | API v{}",
-                  cfg_.server_id, info.version, info.cpu, info.serial,
-                  info.relay_count, info.pca_count, info.api);
-    } catch (const std::exception& ex) {
-        myio::log(stderr, "[{}] Server info unavailable: {}", cfg_.server_id, myio::short_what(ex));
-    }
-
+    // /info.json (firmware version) is fetched by the first publish_discovery;
+    // only if that failed is it retried here, after a successful poll. From
+    // now on discovery does no device HTTP (see publish_discovery).
+    poll_started_ = true;
     myio::log("[{}] Poll loop started, interval={}s",
               cfg_.server_id, cfg_.poll_interval_sec);
 
@@ -721,6 +833,15 @@ net::awaitable<void> ServerBridge::poll_loop() {
     for (const auto& [id, _] : relay_map)  last_relay_state_[id] = -1;
     for (const auto& [id, _] : pwm_map)    last_pwm_state_[id]   = -1;
     for (const auto& [id, _] : sensor_map) last_sensor_val_[id]  = std::numeric_limits<double>::max();
+    // Covers too (key = -(up.id)): the discovery seeds their state only once, so
+    // the poll — also after a resync — must republish the real one.
+    for (const auto& c : cfg_.covers) {
+        if (!c.enabled) continue;
+        if (c.up.output_type == "relay" || c.down.output_type == "relay")
+            last_relay_state_[-(c.up.id)] = -1;
+        if (c.up.output_type == "pca" || c.down.output_type == "pca")
+            last_pca_state_[-(c.up.id)] = -1;
+    }
     syncing_ = true;
 
     // While the device is unreachable (e.g. the multi-minute W5100 lockup),
@@ -731,6 +852,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
         std::exception_ptr caught;
         try {
             const auto state = co_await client_->async_poll();
+            co_await update_pca_capabilities(state);
 
             // Publishes for this cycle are collected here and fired concurrently
             // at the end, instead of one at a time — matters most right after a
@@ -911,6 +1033,26 @@ net::awaitable<void> ServerBridge::poll_loop() {
             consecutive_errors = 0;
             last_poll_error_.clear();
             syncing_ = false;
+        }
+        // A single failed poll (short W5100 hiccup) must not flap every entity to
+        // "unavailable": offline only after several consecutive failures.
+        constexpr int kOfflineAfterFailedPolls = 3;
+        if (!caught)
+            co_await update_availability(true);
+        else if (consecutive_errors >= kOfflineAfterFailedPolls)
+            co_await update_availability(false);
+
+        // Firmware version still unknown (startup fetch failed): ask the device
+        // now, sequentially after the poll, and re-send the discovery so the
+        // device block gets its sw_version. A repeated error is logged once.
+        if (!caught && firmware_version_.empty()) {
+            const std::string prev_error = last_info_error_;
+            if (co_await fetch_server_info()) {
+                co_await publish_discovery();
+            } else if (last_info_error_ != prev_error) {
+                myio::log(stderr, "[{}] Server info unavailable: {}",
+                          cfg_.server_id, last_info_error_);
+            }
         }
 
         net::steady_timer timer(ex);
@@ -1326,15 +1468,83 @@ std::vector<std::function<net::awaitable<void>()>> Bridge::discovery_tasks() {
     return tasks;
 }
 
+net::awaitable<void> Bridge::publish_all_discovery() {
+    try {
+        co_await publisher_->async_publish(
+            bridge_status_discovery_topic(),
+            make_bridge_status_discovery(cfg_.mqtt.topic_prefix, BRIDGE_VERSION), true);
+    } catch (const std::exception& ex) {
+        myio::log(stderr, "[bridge] Bridge discovery publish failed: {}", myio::short_what(ex));
+    }
+    // All servers' discovery is independent — publish it concurrently instead
+    // of waiting for each server's full discovery (incl. its info fetch and
+    // capability poll) to finish before starting the next one.
+    co_await run_concurrently(co_await net::this_coro::executor, discovery_tasks());
+}
+
+net::awaitable<void> Bridge::publish_bridge_online() {
+    try {
+        co_await publisher_->async_publish(
+            bridge_availability_topic(cfg_.mqtt.topic_prefix), kAvailabilityOnline, true);
+        myio::log("[bridge] [bridge to broker] Availability → {}", kAvailabilityOnline);
+    } catch (const std::exception& ex) {
+        myio::log(stderr, "[bridge] Availability publish failed: {}", myio::short_what(ex));
+    }
+}
+
+void Bridge::schedule_birth_discovery() {
+    if (birth_discovery_pending_) {
+        myio::log("[bridge] HA birth – discovery re-send already pending, coalesced.");
+        return;
+    }
+    birth_discovery_pending_ = true;
+
+    // Random 1–10 s: HA (and every other MQTT integration) is still starting up
+    // right after its birth message; spreading the re-send avoids the burst.
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    const auto delay = std::chrono::milliseconds(
+        std::uniform_int_distribution<int>(1000, 10000)(rng));
+    myio::log("[bridge] HA restarted – republishing discovery in {}ms.", delay.count());
+
+    net::co_spawn(ioc_,
+        [this, delay]() -> net::awaitable<void> {
+            net::steady_timer t(co_await net::this_coro::executor);
+            t.expires_after(delay);
+            co_await t.async_wait(net::use_awaitable);
+            // Cleared before the re-send: a birth arriving during it schedules
+            // a new one instead of being lost.
+            birth_discovery_pending_ = false;
+            co_await publish_all_discovery();
+        },
+        [](std::exception_ptr ep) {
+            if (!ep) return;
+            try { std::rethrow_exception(ep); }
+            catch (const std::exception& ex) {
+                myio::log(stderr, "[bridge] Discovery re-send error: {}", myio::short_what(ex));
+            } catch (...) {}
+        });
+}
+
+net::awaitable<void> Bridge::shutdown() {
+    stopping_ = true;
+    try {
+        co_await publisher_->async_publish(
+            bridge_availability_topic(cfg_.mqtt.topic_prefix), kAvailabilityOffline, true);
+        myio::log("[bridge] [bridge to broker] Availability → {}", kAvailabilityOffline);
+    } catch (const std::exception& ex) {
+        myio::log(stderr, "[bridge] Availability publish failed: {}", myio::short_what(ex));
+    }
+    co_await publisher_->async_disconnect();
+}
+
 net::awaitable<void> Bridge::run() {
     co_await publisher_->async_connect();
     co_await publisher_->async_subscribe(cfg_.mqtt.topic_prefix + "/#");
     co_await publisher_->async_subscribe("homeassistant/status");
+    // Overrides the retained "offline" Will of a previous crash.
+    co_await publish_bridge_online();
 
-    // All servers' discovery is independent — publish it concurrently instead
-    // of waiting for each server's full discovery (incl. its capability poll)
-    // to finish before starting the next one.
-    co_await run_concurrently(ioc_.get_executor(), discovery_tasks());
+    co_await publish_all_discovery();
 
     for (auto& srv : servers_) {
         net::co_spawn(ioc_, srv->poll_loop(),
@@ -1374,8 +1584,7 @@ net::awaitable<void> Bridge::command_loop() {
             auto [topic, payload] = co_await publisher_->async_receive();
 
             if (topic == "homeassistant/status" && payload == "online") {
-                myio::log("[bridge] HA restarted – republishing discovery.");
-                co_await run_concurrently(co_await net::this_coro::executor, discovery_tasks());
+                schedule_birth_discovery();
                 continue;
             }
 
@@ -1389,6 +1598,8 @@ net::awaitable<void> Bridge::command_loop() {
         } catch (...) {
             caught = std::current_exception();
         }
+        // Requested stop: the disconnect aborts the receive — not an error.
+        if (stopping_) co_return;
         if (caught || session_expired) {
             if (session_expired) {
                 myio::log("[bridge] MQTT session expired – restoring subscriptions.");
@@ -1400,7 +1611,14 @@ net::awaitable<void> Bridge::command_loop() {
                 net::steady_timer t(co_await net::this_coro::executor);
                 t.expires_after(30s);
                 co_await t.async_wait(net::use_awaitable);
+                if (stopping_) co_return;
             }
+            // The broker may have published our Will ("offline") on the
+            // connection loss. Restored before the resubscribe: state publishing
+            // works even while SUBACK keeps failing, so the entities must not
+            // stay unavailable meanwhile. The resync republishes the server
+            // availability.
+            co_await publish_bridge_online();
             // Retry until the subscriptions are back (incl. a SUBACK refusal):
             // giving up would leave the bridge connected but deaf to commands.
             for (;;) {
@@ -1409,18 +1627,20 @@ net::awaitable<void> Bridge::command_loop() {
                     co_await publisher_->async_subscribe("homeassistant/status");
                     break;
                 } catch (const std::exception& ex) {
+                    if (stopping_) co_return;
                     myio::log(stderr, "[bridge] Resubscribe failed (retry in 30s): {}",
                               myio::short_what(ex));
                 }
                 net::steady_timer t(co_await net::this_coro::executor);
                 t.expires_after(30s);
                 co_await t.async_wait(net::use_awaitable);
+                if (stopping_) co_return;
             }
             try {
                 myio::log("[bridge] Reconnected – republishing discovery and scheduling state resync.");
                 for (auto& srv : servers_)
                     srv->schedule_resync();
-                co_await run_concurrently(co_await net::this_coro::executor, discovery_tasks());
+                co_await publish_all_discovery();
             } catch (const std::exception& ex) {
                 myio::log(stderr, "[bridge] Reconnect setup error: {}", myio::short_what(ex));
             }
