@@ -1,4 +1,5 @@
 #include "async_http_client.hpp"
+#include "bridge_rules.hpp"
 #include <dsens_parser.hpp>
 
 #include <boost/asio/ip/tcp.hpp>
@@ -31,6 +32,14 @@ static std::string base64_encode(std::string_view input) {
     beast::detail::base64::encode(out.data(), input.data(), input.size());
     return out;
 }
+
+namespace {
+// The device answered the POST with a non-2xx (or unparsable) status: a
+// definitive answer, unlike a transport error, so it is not retried.
+struct HttpStatusError : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+} // namespace
 
 // Extracts JSON content from a raw HTTP response.
 // Bypasses Beast's HTTP parser because the myIO server sends non-standard headers
@@ -154,7 +163,7 @@ net::awaitable<void> AsyncHttpClient::do_post(std::string_view target,
     stream.expires_after(cfg_.timeout);
     co_await http::async_write(stream, req, net::use_awaitable);
 
-    // Read and discard the myIO response
+    // Read the myIO response; only its status line matters.
     std::string raw;
     beast::error_code ec;
     stream.expires_after(cfg_.timeout);
@@ -167,6 +176,21 @@ net::awaitable<void> AsyncHttpClient::do_post(std::string_view target,
 
     beast::error_code sec;
     stream.socket().shutdown(tcp::socket::shutdown_both, sec);
+
+    // A rejected command (401, 5xx…) must not be reported as success, else the
+    // caller publishes an optimistic state the device never took.
+    // Only an explicit status line is judged: the POST response format is not
+    // verified on the device (some myIO answers are HTTP/0.9 without a status
+    // line), so an empty or status-less response keeps the old "accepted"
+    // behaviour instead of failing every command / re-sending it.
+    const auto status = bridge::parse_http_status(raw);
+    if (!status) co_return;
+    if (*status == 401)
+        throw HttpStatusError(std::format(
+            "[{}] POST: HTTP 401 – wrong username or password", cfg_.host));
+    // 3xx is accepted: an embedded form handler may answer with a redirect.
+    if (*status < 200 || *status > 399)
+        throw HttpStatusError(std::format("[{}] POST rejected: HTTP {}", cfg_.host, *status));
 }
 
 // ── Public interface ──────────────────────────────────────────────────────────
@@ -230,6 +254,9 @@ net::awaitable<void> AsyncHttpClient::async_send_command(std::string post_body) 
         try {
             co_await do_post("/", post_body);
             co_return;
+        } catch (const HttpStatusError&) {
+            // The device answered and refused: retrying only adds W5100 traffic.
+            throw;
         } catch (const std::exception&) {
             if (attempt == max_attempts) throw;
             retry = true;

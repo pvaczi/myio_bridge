@@ -86,9 +86,10 @@ target_link_libraries(common
 )
 
 # ── bridge_config (Static Library) ────────────────────────────────────────────
-# bridge.json reader, shared by the bridge executable and the unit tests
+# bridge.json reader + pure bridge rules, shared by the bridge executable and the unit tests
 add_library(bridge_config STATIC
     src/bridge/config_reader.cpp
+    src/bridge/bridge_rules.cpp
 )
 
 target_include_directories(bridge_config

@@ -71,6 +71,35 @@ static OutputType parse_output_type(const json::object& o) {
     return OutputType::Switch;
 }
 
+// Optional "writable" (bool, default true) of an output or cover.
+static bool writable_or_true(const json::object& o, std::string_view ctx) {
+    const auto* v = o.if_contains("writable");
+    if (!v) return true;
+    if (!v->is_bool())
+        throw std::runtime_error(std::format("{}: 'writable' must be true or false", ctx));
+    return v->get_bool();
+}
+
+// Optional "writable" / "device_class" keys of a PCA/relay/PWM output.
+template <typename Output>
+static void parse_output_access(const json::object& o, std::string_view list, Output& out,
+                                std::string_view server_ctx) {
+    const auto ctx = std::format("{}: {} {}", server_ctx, list, out.id);
+    out.writable = writable_or_true(o, ctx);
+    // A cover is driven through its endpoints: a read-only endpoint would make
+    // the cover silently uncontrollable, so it is a configuration error.
+    if (!out.writable &&
+        (out.type == OutputType::CoverUp || out.type == OutputType::CoverDown))
+        throw std::runtime_error(std::format(
+            "{}: a cover endpoint cannot be 'writable': false", ctx));
+    if (const auto* v = o.if_contains("device_class")) {
+        if (!v->is_string() || v->get_string().empty())
+            throw std::runtime_error(std::format(
+                "{}: 'device_class' must be a non-empty string", ctx));
+        out.device_class = std::string(v->get_string());
+    }
+}
+
 // ── MQTT config ───────────────────────────────────────────────────────────────
 
 static MqttConfig parse_mqtt(const json::object& o) {
@@ -132,6 +161,7 @@ static ServerConfig parse_server(const json::object& o) {
             pc.name    = str_or(e, "name");
             pc.type    = parse_output_type(e);
             pc.enabled = bool_or(e, "enabled");
+            parse_output_access(e, "pca", pc, ctx);
             if (pc.id > 0) sc.pca.push_back(std::move(pc));
         }
 
@@ -143,6 +173,7 @@ static ServerConfig parse_server(const json::object& o) {
             rc.name    = str_or(e, "name");
             rc.type    = parse_output_type(e);
             rc.enabled = bool_or(e, "enabled");
+            parse_output_access(e, "relay", rc, ctx);
             if (rc.id > 0) sc.relays.push_back(std::move(rc));
         }
 
@@ -154,6 +185,7 @@ static ServerConfig parse_server(const json::object& o) {
             pw.name    = str_or(e, "name");
             pw.type    = parse_output_type(e);
             pw.enabled = bool_or(e, "enabled");
+            parse_output_access(e, "pwm", pw, ctx);
             if (pw.id > 0) sc.pwm.push_back(std::move(pw));
         }
 
@@ -185,6 +217,11 @@ static ServerConfig parse_server(const json::object& o) {
             // Both endpoints are mandatory: without them the endpoint id would
             // be meaningless and the cover would drive an arbitrary output.
             const auto cov_ctx = std::format("{}: cover '{}'", ctx, cc.cover_id);
+            // A read-only cover is meaningless (it would be a stuck motor
+            // display) — reject it instead of guessing a representation.
+            if (!writable_or_true(e, cov_ctx))
+                throw std::runtime_error(std::format(
+                    "{}: a cover cannot be 'writable': false", cov_ctx));
             const auto* up   = e.if_contains("up");
             const auto* down = e.if_contains("down");
             if (!up || !up->is_object() || !down || !down->is_object())

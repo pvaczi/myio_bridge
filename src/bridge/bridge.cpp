@@ -1,6 +1,7 @@
 #include "bridge.hpp"
 #include <log.hpp>
 #include "async_http_client.hpp"
+#include "bridge_rules.hpp"
 
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -61,8 +62,13 @@ std::string sensor_state_topic(const std::string& p, const std::string& s, int i
 std::string number_state_topic(const std::string& p, const std::string& s, int id) {
     return std::format("{}/{}/number/{}/state", p, s, id);
 }
+std::string light_percent_topic(const std::string& p, const std::string& s, int id) {
+    return std::format("{}/{}/light/{}/percent", p, s, id);
+}
 
 // ── HA discovery JSON helpers ─────────────────────────────────────────────────
+// No "retain" key in any config: it sets the retain flag of the COMMANDS that
+// HA publishes, and a retained /set would be replayed as a command later.
 
 static json::object device_info(const std::string& srv_id) {
     return {
@@ -84,7 +90,6 @@ std::string make_switch_discovery(const std::string& p, const std::string& s,
     o["command_topic"] = base + "/set";
     o["payload_on"]    = "ON";
     o["payload_off"]   = "OFF";
-    o["retain"]        = true;
     o["device"]        = device_info(s);
     return json::serialize(o);
 }
@@ -100,7 +105,6 @@ std::string make_switch_discovery(const std::string& p, const std::string& s,
     o["command_topic"] = base + "/set";
     o["payload_on"]    = "ON";
     o["payload_off"]   = "OFF";
-    o["retain"]        = true;
     o["device"]        = device_info(s);
     return json::serialize(o);
 }
@@ -121,7 +125,6 @@ std::string make_light_discovery(const std::string& p, const std::string& s,
     }
     o["payload_on"]  = "ON";
     o["payload_off"] = "OFF";
-    o["retain"]      = true;
     o["device"]      = device_info(s);
     return json::serialize(o);
 }
@@ -140,7 +143,6 @@ std::string make_light_discovery(const std::string& p, const std::string& s,
     o["brightness_scale"]         = 255;
     o["payload_on"]               = "ON";
     o["payload_off"]              = "OFF";
-    o["retain"]                   = true;
     o["device"]                   = device_info(s);
     return json::serialize(o);
 }
@@ -158,7 +160,6 @@ std::string make_number_discovery(const std::string& p, const std::string& s,
     o["max"]                 = 100;
     o["step"]                = 1;
     o["unit_of_measurement"] = "%";
-    o["retain"]              = true;
     o["device"]              = device_info(s);
     return json::serialize(o);
 }
@@ -176,7 +177,6 @@ std::string make_number_discovery(const std::string& p, const std::string& s,
     o["max"]                 = 100;
     o["step"]                = 1;
     o["unit_of_measurement"] = "%";
-    o["retain"]              = true;
     o["device"]              = device_info(s);
     return json::serialize(o);
 }
@@ -200,7 +200,6 @@ std::string make_cover_discovery(const std::string& p, const std::string& s,
     o["state_opening"] = "opening";
     o["state_closing"] = "closing";
     o["state_stopped"] = "stopped";
-    o["retain"]        = true;
     o["device"]        = device_info(s);
     return json::serialize(o);
 }
@@ -212,7 +211,6 @@ std::string make_sensor_discovery(const std::string& p, const std::string& s,
     o["name"]        = sen.name.empty() ? uid : sen.name;
     o["unique_id"]   = uid;
     o["state_topic"] = sensor_state_topic(p, s, sen.id);
-    o["retain"]      = true;
     if (sen.id >= 1   && sen.id <= 100) o["unit_of_measurement"] = "°C";
     if (sen.id >= 101 && sen.id <= 108) o["unit_of_measurement"] = "%";
     if (sen.id >= 201 && sen.id <= 203) o["unit_of_measurement"] = "kW";
@@ -226,23 +224,61 @@ std::string make_sensor_discovery(const std::string& p, const std::string& s,
 // Returns the homeassistant/... discovery topic for a given entity.
 // Publishing an empty string to this topic removes the entity from HA.
 
-static std::string pca_discovery_topic(const std::string& s, const config::PcaConfig& e) {
-    std::string type;
-    switch (e.type) {
-        case config::OutputType::Light:  type = "light";  break;
-        case config::OutputType::Number: type = "number"; break;
-        default:                         type = "switch"; break;
+static std::string_view kind_name(OutputKind kind) {
+    switch (kind) {
+        case OutputKind::Pca:   return "pca";
+        case OutputKind::Relay: return "relay";
+        case OutputKind::Pwm:   return "pwm";
     }
-    return std::format("homeassistant/{}/myio_{}_{}/config", type, s, e.id);
+    return "";
 }
 
-static std::string relay_discovery_topic(const std::string& s, const config::RelayConfig& e) {
-    return std::format("homeassistant/switch/myio_{}_{}/config", s, e.id);
+// Writable components keep their historical object id (myio_<srv>_<id>) so the
+// existing HA entities stay untouched. Read-only components use the
+// kind-qualified id (= unique_id): a bare PWM id (101–113) would otherwise
+// collide with a humidity sensor's (101–108) sensor discovery topic.
+static std::string output_discovery_topic(const std::string& s, OutputKind kind, int id,
+                                          std::string_view component) {
+    if (component == "binary_sensor" || component == "sensor")
+        return std::format("homeassistant/{}/myio_{}_{}_{}/config",
+                           component, s, kind_name(kind), id);
+    return std::format("homeassistant/{}/myio_{}_{}/config", component, s, id);
 }
 
-static std::string pwm_discovery_topic(const std::string& s, const config::PwmConfig& e) {
-    const std::string type = (e.type == config::OutputType::Number) ? "number" : "light";
-    return std::format("homeassistant/{}/myio_{}_{}/config", type, s, e.id);
+// Every component an output of this kind can be published as — the stale
+// candidates cleared on a type / writable change.
+static std::vector<std::string_view> candidate_components(OutputKind kind) {
+    switch (kind) {
+        case OutputKind::Pca:   return {"switch", "light", "number", "binary_sensor", "sensor"};
+        case OutputKind::Relay: return {"switch", "binary_sensor"};
+        case OutputKind::Pwm:   return {"light", "number", "sensor"};
+    }
+    return {};
+}
+
+// Discovery config of a read-only (writable: false) output: no command_topic.
+// binary_sensor reads the ON/OFF switch state topic, sensor a percentage.
+template <typename Output>
+static std::string make_readonly_discovery(const std::string& p, const std::string& s,
+                                           OutputKind kind, const Output& e) {
+    const auto component = ha_component(kind, e.type, false);
+    const std::string uid = std::format("myio_{}_{}_{}", s, kind_name(kind), e.id);
+    json::object o;
+    o["name"]      = e.name.empty() ? uid : e.name;
+    o["unique_id"] = uid;
+    if (component == "binary_sensor") {
+        o["state_topic"] = switch_state_topic(p, s, e.id);
+        o["payload_on"]  = "ON";
+        o["payload_off"] = "OFF";
+        if (!e.device_class.empty()) o["device_class"] = e.device_class;
+    } else {
+        o["state_topic"] = (command_component(kind, e.type) == "number")
+            ? number_state_topic(p, s, e.id)
+            : light_percent_topic(p, s, e.id);
+        o["unit_of_measurement"] = "%";
+    }
+    o["device"] = device_info(s);
+    return json::serialize(o);
 }
 
 static std::string sensor_discovery_topic(const std::string& s, const config::SensorConfig& e) {
@@ -255,12 +291,11 @@ static std::string cover_discovery_topic(const std::string& s, const config::Cov
 
 // ── Utility ───────────────────────────────────────────────────────────────────
 
-static std::string normalize_payload(std::string s) {
-    std::ranges::transform(s, s.begin(),
-        [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back())))  s.pop_back();
-    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
-    return s;
+// Payload as shown in a warning: bounded, so a junk message cannot flood the log.
+static std::string payload_for_log(const std::string& payload) {
+    constexpr std::size_t max_len = 32;
+    if (payload.size() <= max_len) return std::format("'{}'", payload);
+    return std::format("'{}…' ({} bytes)", payload.substr(0, max_len), payload.size());
 }
 
 static std::vector<std::string> split_topic(const std::string& topic) {
@@ -335,6 +370,20 @@ static net::awaitable<void> cover_motor_timeout(
     } catch (...) {}
 }
 
+// An output that is an endpoint of an ENABLED cover is driven only through its
+// cover entity: discovery gives it no own entity and its own /set is dropped.
+// Endpoints of a disabled cover are free outputs again.
+static bool is_cover_endpoint(const std::vector<config::CoverConfig>& covers,
+                              OutputKind kind, int id) {
+    if (kind == OutputKind::Pwm) return false;
+    const std::string_view t = (kind == OutputKind::Relay) ? "relay" : "pca";
+    return std::ranges::any_of(covers, [&](const config::CoverConfig& c) {
+        return c.enabled &&
+               ((c.up.output_type   == t && c.up.id   == id) ||
+                (c.down.output_type == t && c.down.id == id));
+    });
+}
+
 // ── ServerBridge ──────────────────────────────────────────────────────────────
 
 ServerBridge::ServerBridge(config::ServerConfig               cfg,
@@ -388,86 +437,97 @@ net::awaitable<void> ServerBridge::publish_discovery() {
         }
     }
 
+    // A failed publish is logged and skipped, never aborts the rest: discovery
+    // runs at startup, on HA restart and on reconnect, and is simply retried then.
+    int         failures = 0;
+    std::string first_error;
+    auto publish = [&](const std::string& topic, const std::string& payload)
+        -> net::awaitable<void> {
+        try {
+            co_await publisher_->async_publish(topic, payload, true);
+        } catch (const std::exception& ex) {
+            if (failures++ == 0) first_error = myio::short_what(ex);
+        }
+    };
+
+    // One output: clear the config topic of every OTHER component it could have
+    // been published as (type or writable change — HA would otherwise keep the
+    // old entity as an orphan; clearing a never-used topic is harmless), then
+    // publish the current config, or "" (undiscovery) when disabled.
+    // component "" = cover endpoint: only represented by its cover entity.
+    auto publish_output = [&](OutputKind kind, int id, std::string_view component,
+                              std::string payload) -> net::awaitable<void> {
+        const std::string current = component.empty()
+            ? std::string() : output_discovery_topic(s, kind, id, component);
+        for (const auto c : candidate_components(kind)) {
+            const std::string stale = output_discovery_topic(s, kind, id, c);
+            if (stale != current) co_await publish(stale, "");
+        }
+        if (!current.empty()) co_await publish(current, payload);
+    };
+
     for (const auto& e : cfg_.pca) {
-        // Skip cover endpoints – they are only represented as cover entities
-        if (e.type == config::OutputType::CoverUp ||
-            e.type == config::OutputType::CoverDown) continue;
-
-        const std::string dtopic = pca_discovery_topic(s, e);
-
-        // Clear stale discovery topics from previous type assignments.
-        // If this PCA was previously a switch and is now a light, HA keeps both
-        // until the old topic is explicitly cleared with an empty retained message.
-        for (const char* t : {"switch", "light", "number"}) {
-            const std::string stale = std::format("homeassistant/{}/myio_{}_{}/config", t, s, e.id);
-            if (stale != dtopic)
-                co_await publisher_->async_publish(stale, "", true);
-        }
-
-        if (e.enabled) {
-            std::string payload;
-            switch (e.type) {
-                case config::OutputType::Light: {
-                    const bool can_dim = pca_is_pwm_.count(e.id) && pca_is_pwm_.at(e.id);
-                    payload = make_light_discovery(p, s, e, can_dim);
-                    break;
-                }
-                case config::OutputType::Number:
-                    payload = make_number_discovery(p, s, e); break;
-                default:
-                    payload = make_switch_discovery(p, s, e); break;
+        const std::string_view component = is_cover_endpoint(cfg_.covers, OutputKind::Pca, e.id)
+            ? std::string_view{} : ha_component(OutputKind::Pca, e.type, e.writable);
+        std::string payload;
+        if (e.enabled && !component.empty()) {
+            if (!e.writable) {
+                payload = make_readonly_discovery(p, s, OutputKind::Pca, e);
+            } else if (component == "light") {
+                const bool can_dim = pca_is_pwm_.count(e.id) && pca_is_pwm_.at(e.id);
+                payload = make_light_discovery(p, s, e, can_dim);
+            } else if (component == "number") {
+                payload = make_number_discovery(p, s, e);
+            } else {
+                payload = make_switch_discovery(p, s, e);
             }
-            co_await publisher_->async_publish(dtopic, payload, true);
-        } else {
-            // Undiscovery: empty retained message removes entity from HA
-            co_await publisher_->async_publish(dtopic, "", true);
         }
+        co_await publish_output(OutputKind::Pca, e.id, component, std::move(payload));
     }
 
     for (const auto& e : cfg_.relays) {
-        if (e.type == config::OutputType::CoverUp ||
-            e.type == config::OutputType::CoverDown) continue;
-
-        const std::string dtopic = relay_discovery_topic(s, e);
-        if (e.enabled)
-            co_await publisher_->async_publish(dtopic, make_switch_discovery(p, s, e), true);
-        else
-            co_await publisher_->async_publish(dtopic, "", true);
+        const std::string_view component = is_cover_endpoint(cfg_.covers, OutputKind::Relay, e.id)
+            ? std::string_view{} : ha_component(OutputKind::Relay, e.type, e.writable);
+        std::string payload;
+        if (e.enabled && !component.empty())
+            payload = e.writable ? make_switch_discovery(p, s, e)
+                                 : make_readonly_discovery(p, s, OutputKind::Relay, e);
+        co_await publish_output(OutputKind::Relay, e.id, component, std::move(payload));
     }
 
     for (const auto& e : cfg_.pwm) {
-        const std::string dtopic = pwm_discovery_topic(s, e);
-        if (e.enabled) {
-            const std::string payload = (e.type == config::OutputType::Number)
-                ? make_number_discovery(p, s, e)
-                : make_light_discovery(p, s, e);
-            co_await publisher_->async_publish(dtopic, payload, true);
-        } else {
-            co_await publisher_->async_publish(dtopic, "", true);
+        const auto component = ha_component(OutputKind::Pwm, e.type, e.writable);
+        std::string payload;
+        if (e.enabled && !component.empty()) {
+            if (!e.writable)                payload = make_readonly_discovery(p, s, OutputKind::Pwm, e);
+            else if (component == "number") payload = make_number_discovery(p, s, e);
+            else                            payload = make_light_discovery(p, s, e);
         }
+        co_await publish_output(OutputKind::Pwm, e.id, component, std::move(payload));
     }
 
     for (const auto& e : cfg_.sensors) {
         const std::string dtopic = sensor_discovery_topic(s, e);
-        if (e.enabled)
-            co_await publisher_->async_publish(dtopic, make_sensor_discovery(p, s, e), true);
-        else
-            co_await publisher_->async_publish(dtopic, "", true);
+        co_await publish(dtopic, e.enabled ? make_sensor_discovery(p, s, e) : std::string());
     }
 
     for (const auto& c : cfg_.covers) {
         const std::string dtopic = cover_discovery_topic(s, c);
         if (c.enabled) {
-            co_await publisher_->async_publish(dtopic, make_cover_discovery(p, s, c), true);
+            co_await publish(dtopic, make_cover_discovery(p, s, c));
             // Reset any stale retained state (e.g. "open"/"closed" from a previous run)
-            co_await publisher_->async_publish(cover_state_topic(p, s, c.cover_id), "stopped", true);
-            co_await publisher_->async_publish(cover_position_topic(p, s, c.cover_id), "50", true);
+            co_await publish(cover_state_topic(p, s, c.cover_id), "stopped");
+            co_await publish(cover_position_topic(p, s, c.cover_id), "50");
         } else {
-            co_await publisher_->async_publish(dtopic, "", true);
+            co_await publish(dtopic, "");
         }
     }
 
-    myio::log("[{}] Discovery published.", cfg_.server_id);
+    if (failures > 0)
+        myio::log(stderr, "[{}] Discovery: {} publish(es) failed, first: {}",
+                  cfg_.server_id, failures, first_error);
+    else
+        myio::log("[{}] Discovery published.", cfg_.server_id);
 }
 
 // ── State publishers ──────────────────────────────────────────────────────────
@@ -481,6 +541,18 @@ net::awaitable<void> ServerBridge::publish_pca_state(const myio::PcaOutput& pca,
             std::to_string(pct), true);
         if (should_log_now())
             myio::log("[{}] [{}] PCA {} ({}) → {}%",
+                      cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", pca.id, cfg.name, pct);
+        co_return;
+    }
+
+    // Read-only light: its HA entity is a percentage sensor
+    if (cfg.type == config::OutputType::Light && !cfg.writable) {
+        const int pct = static_cast<int>(std::round(pca.state / 255.0 * 100.0));
+        co_await publisher_->async_publish(
+            light_percent_topic(topic_prefix_, cfg_.server_id, pca.id),
+            std::to_string(pct), true);
+        if (should_log_now())
+            myio::log("[{}] [{}] PCA {} ({}) → {}% (read-only)",
                       cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", pca.id, cfg.name, pct);
         co_return;
     }
@@ -554,6 +626,16 @@ net::awaitable<void> ServerBridge::publish_pwm_state(const myio::PwmOutput& pwm,
 
     const std::string on_off = (pwm.state > pwm.turn_off) ? "ON" : "OFF";
     const int pct = static_cast<int>(std::round(pwm.state / 255.0 * 100.0));
+    // Read-only light: its HA entity is a percentage sensor
+    if (!cfg.writable) {
+        co_await publisher_->async_publish(
+            light_percent_topic(topic_prefix_, cfg_.server_id, pwm.id),
+            std::to_string(pct), true);
+        if (should_log_now())
+            myio::log("[{}] [{}] PWM {} ({}) → {}% (read-only)",
+                      cfg_.server_id, syncing_ ? "startup sync" : "myIO to broker", pwm.id, cfg.name, pct);
+        co_return;
+    }
     co_await publisher_->async_publish(
         light_state_topic(topic_prefix_, cfg_.server_id, pwm.id), on_off, true);
     co_await publisher_->async_publish(
@@ -653,7 +735,12 @@ net::awaitable<void> ServerBridge::poll_loop() {
             // Publishes for this cycle are collected here and fired concurrently
             // at the end, instead of one at a time — matters most right after a
             // broker reconnect, when every entity resyncs in the same cycle.
+            // Every last_* cache entry below is updated only AFTER its publish
+            // succeeded (inside the task): a failed publish leaves the old value,
+            // so the next poll sees the change again and retries it.
             std::vector<std::function<net::awaitable<void>()>> pending;
+            // Both endpoints of a cover are visited; schedule its publish once.
+            std::unordered_set<int> scheduled_pca_covers, scheduled_relay_covers;
 
             for (const auto& pca : state.pca_outputs) {
                 if (cover_ids.contains(pca.id)) {
@@ -671,14 +758,15 @@ net::awaitable<void> ServerBridge::poll_loop() {
                     const int combined   = up_state * 1000 + down_state;
                     const int key        = -(cover->up.id);
 
-                    auto& last = last_pca_state_[key];
-                    if (last != combined) {
+                    if (last_pca_state_[key] != combined &&
+                        scheduled_pca_covers.insert(key).second) {
                         if      (up_state > 0)   last_cover_dir_[key] = +1;
                         else if (down_state > 0) last_cover_dir_[key] = -1;
-                        last = combined;
                         const int dir = last_cover_dir_.count(key) ? last_cover_dir_.at(key) : 0;
-                        pending.push_back([this, cover, up_state, down_state, dir]() -> net::awaitable<void> {
-                            return publish_cover_state(*cover, up_state, down_state, dir);
+                        pending.push_back([this, cover, up_state, down_state, dir, key, combined]()
+                            -> net::awaitable<void> {
+                            co_await publish_cover_state(*cover, up_state, down_state, dir);
+                            last_pca_state_[key] = combined;
                         });
                     }
                     continue;
@@ -687,11 +775,10 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 const auto it = pca_map.find(pca.id);
                 if (it == pca_map.end()) continue;
 
-                auto& last = last_pca_state_[pca.id];
-                if (last != pca.state) {
-                    last = pca.state;
+                if (last_pca_state_[pca.id] != pca.state) {
                     pending.push_back([this, pca, cfg = it->second]() -> net::awaitable<void> {
-                        return publish_pca_state(pca, *cfg);
+                        co_await publish_pca_state(pca, *cfg);
+                        last_pca_state_[pca.id] = pca.state;
                     });
                 }
             }
@@ -712,14 +799,15 @@ net::awaitable<void> ServerBridge::poll_loop() {
                     const int combined   = up_state * 1000 + down_state;
                     const int key        = -(cover->up.id);
 
-                    auto& last = last_relay_state_[key];
-                    if (last != combined) {
+                    if (last_relay_state_[key] != combined &&
+                        scheduled_relay_covers.insert(key).second) {
                         if      (up_state > 0)   last_cover_dir_[key] = +1;
                         else if (down_state > 0) last_cover_dir_[key] = -1;
-                        last = combined;
                         const int dir = last_cover_dir_.count(key) ? last_cover_dir_.at(key) : 0;
-                        pending.push_back([this, cover, up_state, down_state, dir]() -> net::awaitable<void> {
-                            return publish_cover_state(*cover, up_state, down_state, dir);
+                        pending.push_back([this, cover, up_state, down_state, dir, key, combined]()
+                            -> net::awaitable<void> {
+                            co_await publish_cover_state(*cover, up_state, down_state, dir);
+                            last_relay_state_[key] = combined;
                         });
                     }
                     continue;
@@ -727,11 +815,12 @@ net::awaitable<void> ServerBridge::poll_loop() {
 
                 const auto it = relay_map.find(relay.id);
                 if (it == relay_map.end()) continue;
-                auto& last = last_relay_state_[relay.id];
-                if (last != static_cast<int>(relay.state)) {
-                    last = relay.state ? 1 : 0;
-                    pending.push_back([this, relay, cfg = it->second]() -> net::awaitable<void> {
-                        return publish_relay_state(relay, *cfg);
+                const int relay_state = relay.state ? 1 : 0;
+                if (last_relay_state_[relay.id] != relay_state) {
+                    pending.push_back([this, relay, relay_state, cfg = it->second]()
+                        -> net::awaitable<void> {
+                        co_await publish_relay_state(relay, *cfg);
+                        last_relay_state_[relay.id] = relay_state;
                     });
                 }
             }
@@ -739,11 +828,10 @@ net::awaitable<void> ServerBridge::poll_loop() {
             for (const auto& pwm : state.pwm_outputs) {
                 const auto it = pwm_map.find(pwm.id);
                 if (it == pwm_map.end()) continue;
-                auto& last = last_pwm_state_[pwm.id];
-                if (last != pwm.state) {
-                    last = pwm.state;
+                if (last_pwm_state_[pwm.id] != pwm.state) {
                     pending.push_back([this, pwm, cfg = it->second]() -> net::awaitable<void> {
-                        return publish_pwm_state(pwm, *cfg);
+                        co_await publish_pwm_state(pwm, *cfg);
+                        last_pwm_state_[pwm.id] = pwm.state;
                     });
                 }
             }
@@ -767,25 +855,35 @@ net::awaitable<void> ServerBridge::poll_loop() {
                     }
                     continue;
                 }
-                auto& last = last_sensor_val_[sensor.id];
-                if (std::abs(last - val) > 0.005) {
-                    last = val;
-                    auto& last_logged = last_sensor_logged_val_[sensor.id];
+                if (std::abs(last_sensor_val_[sensor.id] - val) > 0.005) {
+                    const double last_logged = last_sensor_logged_val_[sensor.id];
                     const double thr = (it->second->log_threshold >= 0.0)
                                          ? it->second->log_threshold
                                          : cfg_.sensor_log_threshold;
                     const bool do_log = should_log_now() &&
                                         (thr <= 0.0 ||
                                          std::abs(last_logged - val) >= thr);
-                    if (do_log || syncing_) last_logged = val;
-                    pending.push_back([this, sensor, cfg = it->second, do_log]() -> net::awaitable<void> {
-                        return publish_sensor_state(sensor, *cfg, do_log);
+                    const bool update_logged = do_log || syncing_;
+                    pending.push_back([this, sensor, cfg = it->second, do_log, update_logged, val]()
+                        -> net::awaitable<void> {
+                        co_await publish_sensor_state(sensor, *cfg, do_log);
+                        last_sensor_val_[sensor.id] = val;
+                        if (update_logged) last_sensor_logged_val_[sensor.id] = val;
                     });
                 }
             }
 
-            if (!pending.empty())
-                co_await run_concurrently(ex, std::move(pending));
+            // A broker-side failure is not a device poll error: log it and keep
+            // the normal poll rate (no backoff) — the unchanged caches make the
+            // next cycle retry exactly the values that did not get through.
+            if (!pending.empty()) {
+                try {
+                    co_await run_concurrently(ex, std::move(pending));
+                } catch (const std::exception& e) {
+                    myio::log(stderr, "[{}] State publish error (retry next poll): {}",
+                              cfg_.server_id, myio::short_what(e));
+                }
+            }
 
         } catch (...) {
             caught = std::current_exception();
@@ -823,6 +921,10 @@ net::awaitable<void> ServerBridge::poll_loop() {
 
 // ── Command handler ───────────────────────────────────────────────────────────
 // Only enabled entities receive commands. Disabled entities are silently ignored.
+// Everything else that is not a valid command — wrong component for the
+// output's configured type, read-only output, cover endpoint, malformed or
+// empty payload (a retained-clear) — is dropped with a warning: no POST, and
+// no state publish. Only canonical values are ever published as state.
 
 std::optional<PreparedCommand>
 ServerBridge::prepare_command(const std::string& topic,
@@ -833,13 +935,23 @@ ServerBridge::prepare_command(const std::string& topic,
 
     const std::string& entity_type = parts[2];
     const std::string& id_str      = parts[3];
-    const std::string  cmd         = normalize_payload(payload);
+
+    auto drop = [&](std::string_view reason) -> std::optional<PreparedCommand> {
+        myio::log(stderr, "[{}] [broker to myIO] Command dropped ({}): {} {}",
+                  cfg_.server_id, reason, topic, payload_for_log(payload));
+        return std::nullopt;
+    };
 
     // Cover command
     if (entity_type == "cover") {
-        if (parts[4] != "set") return std::nullopt;
+        if (parts.size() != 5 || parts[4] != "set") return std::nullopt;
         for (const auto& c : cfg_.covers) {
             if (!c.enabled || c.cover_id != id_str) continue;
+            const auto cover_cmd = parse_cover_command(payload);
+            if (!cover_cmd) return drop("invalid cover payload");
+            const std::string cmd = (*cover_cmd == CoverCommand::Open)  ? "OPEN"
+                                  : (*cover_cmd == CoverCommand::Close) ? "CLOSE"
+                                                                        : "STOP";
             auto ep_on = [](const config::CoverEndpoint& ep) -> std::string {
                 return ep.output_type == "relay"
                     ? std::format("r_ON={}",   ep.id)
@@ -853,8 +965,7 @@ ServerBridge::prepare_command(const std::string& topic,
             std::string post;
             if      (cmd == "OPEN")  post = ep_off(c.down) + "&" + ep_on(c.up);
             else if (cmd == "CLOSE") post = ep_off(c.up)   + "&" + ep_on(c.down);
-            else if (cmd == "STOP")  post = ep_off(c.up)   + "&" + ep_off(c.down);
-            else return std::nullopt;
+            else                     post = ep_off(c.up)   + "&" + ep_off(c.down);
             myio::log("[{}] [broker to myIO] Cover {} ({}) → {}", cfg_.server_id, c.cover_id, c.name, post);
 
             const config::CoverConfig c_copy = c;
@@ -871,29 +982,33 @@ ServerBridge::prepare_command(const std::string& topic,
             // match what the next poll computes (no duplicate republish). PCA
             // on-values are 0–255 and unknown here → use the -1 sentinel, which
             // just forces a (harmless) republish on the next poll.
+            // The cache is written only after the publish succeeded; if it threw,
+            // the old cache value makes the next poll republish the real state.
             const int key = -(c.up.id);
             if (cmd == "OPEN") {
                 last_cover_dir_[key] = +1;
-                if (c.up.output_type == "relay") last_relay_state_[key] = 1000;
-                else                             last_pca_state_[key]   = -1;
                 co_await publisher_->async_publish(
                     cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), "opening", true);
+                if (c.up.output_type == "relay") last_relay_state_[key] = 1000;
+                else                             last_pca_state_[key]   = -1;
                 myio::log("[{}] [bridge to broker] Cover {} ({}) → opening", cfg_.server_id, c.cover_id, c.name);
             } else if (cmd == "CLOSE") {
                 last_cover_dir_[key] = -1;
-                if (c.up.output_type == "relay") last_relay_state_[key] = 1;
-                else                             last_pca_state_[key]   = -1;
                 co_await publisher_->async_publish(
                     cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), "closing", true);
+                if (c.up.output_type == "relay") last_relay_state_[key] = 1;
+                else                             last_pca_state_[key]   = -1;
                 myio::log("[{}] [bridge to broker] Cover {} ({}) → closing", cfg_.server_id, c.cover_id, c.name);
             } else if (cmd == "STOP") {
+                // The motor is stopped (POST succeeded): cancel the end-position
+                // timer even if the state publish below fails.
+                if (last_cover_cancel_.count(key))
+                    *last_cover_cancel_[key] = true;
                 co_await publisher_->async_publish(
                     cover_state_topic(topic_prefix_, cfg_.server_id, c.cover_id), "stopped", true);
                 co_await publisher_->async_publish(
                     cover_position_topic(topic_prefix_, cfg_.server_id, c.cover_id), "50", true);
                 myio::log("[{}] [bridge to broker] Cover {} ({}) → stopped", cfg_.server_id, c.cover_id, c.name);
-                if (last_cover_cancel_.count(key))
-                    *last_cover_cancel_[key] = true;
             }
 
             // After OPEN/CLOSE, the motor stops on its own when it reaches the end stop.
@@ -926,32 +1041,60 @@ ServerBridge::prepare_command(const std::string& topic,
         return std::nullopt;
     }
 
-    int id = 0;
-    if (std::from_chars(id_str.data(), id_str.data() + id_str.size(), id).ec != std::errc{})
+    // Every other command addresses one numbered output:
+    //   {prefix}/{srv}/{switch|light|number}/{id}/set  or  {prefix}/{srv}/light/{id}/brightness/set
+    // Anything else (state topics, unknown components) is not a command.
+    const bool is_set        = parts.size() == 5 && parts[4] == "set";
+    const bool is_brightness = parts.size() == 6 && parts[4] == "brightness" && parts[5] == "set";
+    if (!is_set && !is_brightness) return std::nullopt;
+    if (entity_type != "switch" && entity_type != "light" && entity_type != "number")
         return std::nullopt;
+    if (is_brightness && entity_type != "light") return std::nullopt;
+
+    const auto id_opt = parse_int_in_range(id_str, 1, std::numeric_limits<int>::max());
+    if (!id_opt) return std::nullopt;
+    const int id = *id_opt;
+
+    // Exact type match: the topic's component must be the one that owns the
+    // output's configured type (lookup order PCA, PWM, relay as before).
+    struct Target {
+        OutputKind  kind;
+        bool        writable;
+        std::string name;
+    };
+    std::optional<Target> target;
+    bool other_type = false;  // an enabled output with this id exists, but of another type
+    auto consider = [&](OutputKind kind, const auto& list) {
+        for (const auto& e : list) {
+            if (e.id != id || !e.enabled) continue;
+            const bool owns = !is_cover_endpoint(cfg_.covers, kind, e.id) &&
+                              command_component(kind, e.type) == entity_type;
+            if (!owns)        other_type = true;
+            else if (!target) target = Target{kind, e.writable, e.name};
+        }
+    };
+    consider(OutputKind::Pca,   cfg_.pca);
+    consider(OutputKind::Pwm,   cfg_.pwm);
+    consider(OutputKind::Relay, cfg_.relays);
+
+    if (!target) {
+        if (other_type) return drop("component does not match the output's configured type");
+        return std::nullopt;  // unknown or disabled output
+    }
+    // Second line of defence behind the missing command_topic in discovery.
+    if (!target->writable) return drop("read-only output (writable: false)");
+
+    const bool is_pca = (target->kind == OutputKind::Pca);
+    const std::string& dev_name = target->name;
 
     // Number value (0–100, passed through to PCA*/fet* as percentage)
-    if (entity_type == "number" && parts[4] == "set") {
-        const auto pca_it = std::ranges::find_if(cfg_.pca,
-            [id](const auto& e) {
-                return e.id == id && e.enabled && e.type == config::OutputType::Number;
-            });
-        const bool is_pca = (pca_it != cfg_.pca.end());
-        const auto pwm_it = std::ranges::find_if(cfg_.pwm,
-            [id](const auto& e) {
-                return e.id == id && e.enabled && e.type == config::OutputType::Number;
-            });
-        const bool is_pwm = (pwm_it != cfg_.pwm.end());
-        if (!is_pca && !is_pwm) return std::nullopt;
-
-        int value = 0;
-        std::from_chars(payload.data(), payload.data() + payload.size(), value);
-        value = std::clamp(value, 0, 100);
+    if (entity_type == "number") {
+        const auto value = parse_int_in_range(payload, 0, 100);
+        if (!value) return drop("number payload must be an integer 0..100");
 
         const std::string post = is_pca
-            ? std::format("PCA*{}={}", id,       value)
-            : std::format("fet*{}={}", id - 100, value);
-        const std::string& dev_name = is_pca ? pca_it->name : pwm_it->name;
+            ? std::format("PCA*{}={}", id,       *value)
+            : std::format("fet*{}={}", id - 100, *value);
         myio::log("[{}] [broker to myIO] Number {} ({}) → {}", cfg_.server_id, id, dev_name, post);
         PreparedCommand pcmd;
         pcmd.post = post;
@@ -959,31 +1102,21 @@ ServerBridge::prepare_command(const std::string& topic,
     }
 
     // Light brightness
-    if (entity_type == "light" && parts.size() >= 6 && parts[4] == "brightness" && parts[5] == "set") {
-        const auto pca_it = std::ranges::find_if(cfg_.pca,
-            [id, this](const auto& e) {
-                return e.id == id && e.enabled && e.type == config::OutputType::Light
-                    && pca_is_pwm_.count(id) && pca_is_pwm_.at(id);
-            });
-        const bool is_pca_light = (pca_it != cfg_.pca.end());
-        const auto pwm_it = std::ranges::find_if(cfg_.pwm,
-            [id](const auto& e) {
-                return e.id == id && e.enabled && e.type != config::OutputType::Number;
-            });
-        const bool is_pwm_light = (pwm_it != cfg_.pwm.end());
-        if (!is_pca_light && !is_pwm_light) return std::nullopt;
+    if (is_brightness) {
+        if (is_pca && !(pca_is_pwm_.count(id) && pca_is_pwm_.at(id)))
+            return drop("light is not dimmable");
+        const auto value = parse_int_in_range(payload, 0, 255);
+        if (!value) return drop("brightness payload must be an integer 0..255");
+        const int brightness = *value;
 
-        int brightness = 0;
-        std::from_chars(payload.data(), payload.data() + payload.size(), brightness);
-        const std::string post = is_pca_light
+        const std::string post = is_pca
             ? std::format("PCA*{}={}", id, brightness)
             : std::format("fet*{}={}", id - 100, brightness);
-        const std::string& dev_name = is_pca_light ? pca_it->name : pwm_it->name;
         myio::log("[{}] [broker to myIO] Light brightness {} ({}) → {} ({}%)",
                   cfg_.server_id, id, dev_name, post,
                   static_cast<int>(std::round(brightness / 255.0 * 100.0)));
 
-        const bool        bright_is_pca = is_pca_light;
+        const bool        bright_is_pca = is_pca;
         const std::string dev_name_copy = dev_name;
         PreparedCommand pcmd;
         pcmd.post = post;
@@ -1007,69 +1140,33 @@ ServerBridge::prepare_command(const std::string& topic,
     }
 
     // Switch / light ON-OFF
-    if ((entity_type == "switch" || entity_type == "light") && parts[4] == "set") {
-        // Find enabled matching entry (Number outputs are excluded – they have their own handler above)
-        const auto pca_it = std::ranges::find_if(cfg_.pca,
-            [id](const auto& e) {
-                return e.id == id && e.enabled && e.type != config::OutputType::Number;
-            });
-        const bool is_pca = (pca_it != cfg_.pca.end());
-        const auto relay_it = std::ranges::find_if(cfg_.relays,
-            [id](const auto& e) { return e.id == id && e.enabled; });
-        const bool is_relay = (relay_it != cfg_.relays.end());
-        const auto pwm_it = std::ranges::find_if(cfg_.pwm,
-            [id](const auto& e) {
-                return e.id == id && e.enabled && e.type != config::OutputType::Number;
-            });
-        const bool is_pwm = (pwm_it != cfg_.pwm.end());
+    const auto on = parse_on_off(payload);
+    if (!on) return drop("payload must be ON or OFF");
+    const std::string cmd = *on ? "ON" : "OFF";
 
-        std::string post;
-        if (is_pca) {
-            post = (cmd == "ON") ? std::format("PCA_ON={}", id) : std::format("PCA_OFF={}", id);
-        } else if (is_pwm) {
-            post = (cmd == "ON") ? std::format("f_ON={}", id - 100) : std::format("f_OFF={}", id - 100);
-        } else if (is_relay) {
-            post = (cmd == "ON") ? std::format("r_ON={}", id) : std::format("r_OFF={}", id);
-        } else {
-            return std::nullopt;
-        }
-
-        const std::string& dev_name = is_pca ? pca_it->name : (is_relay ? relay_it->name : pwm_it->name);
-        myio::log("[{}] [broker to myIO] {} {} ({}) → {}", cfg_.server_id, entity_type, id, dev_name, post);
-
-        const std::string        et         = entity_type;
-        const config::OutputType pca_type   = is_pca ? pca_it->type : config::OutputType::Light;
-        const std::string        pca_name   = is_pca   ? pca_it->name   : std::string();
-        const std::string        relay_name = is_relay ? relay_it->name : std::string();
-        const std::string        pwm_name   = is_pwm   ? pwm_it->name   : std::string();
-        PreparedCommand pcmd;
-        pcmd.post = post;
-        pcmd.publish_state =
-            [this, id, cmd, et, is_pca, is_relay, is_pwm, pca_type, pca_name, relay_name, pwm_name]()
-            -> net::awaitable<void> {
-            // Publish optimistic state immediately so HA doesn't revert to the
-            // old retained state while waiting for the next poll cycle.
-            if (is_pca) {
-                const std::string stopic = (pca_type == config::OutputType::Light)
-                    ? light_state_topic(topic_prefix_, cfg_.server_id, id)
-                    : switch_state_topic(topic_prefix_, cfg_.server_id, id);
-                co_await publisher_->async_publish(stopic, cmd, true);
-                myio::log("[{}] [bridge to broker] {} {} ({}) → {}", cfg_.server_id, et, id, pca_name, cmd);
-            } else if (is_relay) {
-                co_await publisher_->async_publish(
-                    switch_state_topic(topic_prefix_, cfg_.server_id, id), cmd, true);
-                myio::log("[{}] [bridge to broker] {} {} ({}) → {}", cfg_.server_id, et, id, relay_name, cmd);
-            } else if (is_pwm) {
-                co_await publisher_->async_publish(
-                    light_state_topic(topic_prefix_, cfg_.server_id, id), cmd, true);
-                myio::log("[{}] [bridge to broker] {} {} ({}) → {}", cfg_.server_id, et, id, pwm_name, cmd);
-            }
-            co_return;
-        };
-        return pcmd;
+    std::string post;
+    switch (target->kind) {
+        case OutputKind::Pca:   post = std::format("{}={}", *on ? "PCA_ON" : "PCA_OFF", id);    break;
+        case OutputKind::Pwm:   post = std::format("{}={}", *on ? "f_ON"   : "f_OFF",   id - 100); break;
+        case OutputKind::Relay: post = std::format("{}={}", *on ? "r_ON"   : "r_OFF",   id);    break;
     }
+    myio::log("[{}] [broker to myIO] {} {} ({}) → {}", cfg_.server_id, entity_type, id, dev_name, post);
 
-    return std::nullopt;
+    // The component equals the topic's (exact match above), so is its state topic.
+    const std::string stopic = (entity_type == "light")
+        ? light_state_topic(topic_prefix_, cfg_.server_id, id)
+        : switch_state_topic(topic_prefix_, cfg_.server_id, id);
+    const std::string et       = entity_type;
+    const std::string name_cpy = dev_name;
+    PreparedCommand pcmd;
+    pcmd.post = post;
+    pcmd.publish_state = [this, id, cmd, et, stopic, name_cpy]() -> net::awaitable<void> {
+        // Publish optimistic state immediately so HA doesn't revert to the
+        // old retained state while waiting for the next poll cycle.
+        co_await publisher_->async_publish(stopic, cmd, true);
+        myio::log("[{}] [bridge to broker] {} {} ({}) → {}", cfg_.server_id, et, id, name_cpy, cmd);
+    };
+    return pcmd;
 }
 
 // ── enqueue + batched command worker ──────────────────────────────────────────
@@ -1111,10 +1208,17 @@ net::awaitable<void> ServerBridge::process_command_batch(
     }
     // Publish optimistic state only after the POST returns. If the POST threw,
     // we never get here (the worker catches it), so HA is not told about a state
-    // change the device never received.
-    for (auto& pc : prepared)
-        if (pc.publish_state)
+    // change the device never received. A failed state publish is logged and
+    // does not skip the remaining ones; the next poll republishes the truth.
+    for (auto& pc : prepared) {
+        if (!pc.publish_state) continue;
+        try {
             co_await pc.publish_state();
+        } catch (const std::exception& ex) {
+            myio::log(stderr, "[{}] [bridge to broker] State publish failed: {}",
+                      cfg_.server_id, myio::short_what(ex));
+        }
+    }
 }
 
 net::awaitable<void> ServerBridge::command_worker() {
@@ -1297,9 +1401,22 @@ net::awaitable<void> Bridge::command_loop() {
                 t.expires_after(30s);
                 co_await t.async_wait(net::use_awaitable);
             }
+            // Retry until the subscriptions are back (incl. a SUBACK refusal):
+            // giving up would leave the bridge connected but deaf to commands.
+            for (;;) {
+                try {
+                    co_await publisher_->async_subscribe(cfg_.mqtt.topic_prefix + "/#");
+                    co_await publisher_->async_subscribe("homeassistant/status");
+                    break;
+                } catch (const std::exception& ex) {
+                    myio::log(stderr, "[bridge] Resubscribe failed (retry in 30s): {}",
+                              myio::short_what(ex));
+                }
+                net::steady_timer t(co_await net::this_coro::executor);
+                t.expires_after(30s);
+                co_await t.async_wait(net::use_awaitable);
+            }
             try {
-                co_await publisher_->async_subscribe(cfg_.mqtt.topic_prefix + "/#");
-                co_await publisher_->async_subscribe("homeassistant/status");
                 myio::log("[bridge] Reconnected – republishing discovery and scheduling state resync.");
                 for (auto& srv : servers_)
                     srv->schedule_resync();

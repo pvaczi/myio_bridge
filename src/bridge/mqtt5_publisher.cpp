@@ -53,8 +53,14 @@ net::awaitable<void> MQTT5Publisher::async_publish(std::string_view topic,
                 mqtt5::publish_props{},
                 net::as_tuple(net::use_awaitable));
 
+        // Propagate instead of logging: callers update their change-detection
+        // cache only after a successful publish, so the value is retried later.
         if (ec)
-            myio::log(stderr, "[mqtt] Publish error ({}): {}", topic, ec.message());
+            throw std::runtime_error(
+                std::format("[mqtt] Publish error ({}): {}", topic, ec.message()));
+        if (reason_code)  // operator bool: true = error reason code (>= 0x80)
+            throw std::runtime_error(
+                std::format("[mqtt] PUBACK error ({}): {}", topic, reason_code.message()));
     } else {
         // QoS 0 – fire and forget, no acknowledgement
         co_await client_.async_publish<mqtt5::qos_e::at_most_once>(
@@ -95,6 +101,12 @@ net::awaitable<void> MQTT5Publisher::async_subscribe(std::string_view topic_filt
     if (ec)
         throw std::runtime_error(
             std::format("[mqtt] Subscribe error ({}): {}", topic_filter, ec.message()));
+    // A refused filter (e.g. not authorized) is reported per topic in the
+    // SUBACK, not via ec — without this check the bridge would be silently deaf.
+    for (const auto& rc : reason_codes)
+        if (rc)  // error reason code (>= 0x80)
+            throw std::runtime_error(
+                std::format("[mqtt] SUBACK error ({}): {}", topic_filter, rc.message()));
 
     myio::log("[mqtt] Subscribed: {}", topic_filter);
 }

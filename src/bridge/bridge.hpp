@@ -41,6 +41,8 @@ std::string cover_position_topic (const std::string& prefix, const std::string& 
 std::string cover_cmd_topic      (const std::string& prefix, const std::string& srv, const std::string& cover_id);
 std::string sensor_state_topic   (const std::string& prefix, const std::string& srv, int id);
 std::string number_state_topic   (const std::string& prefix, const std::string& srv, int id);
+// Read-only (writable: false) light: brightness in % for its HA sensor
+std::string light_percent_topic  (const std::string& prefix, const std::string& srv, int id);
 
 // ── HA MQTT discovery JSON builders ──────────────────────────────────────────
 

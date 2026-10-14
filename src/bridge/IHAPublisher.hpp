@@ -28,7 +28,8 @@ public:
     // Connect to the broker. Throws on failure.
     virtual net::awaitable<void> async_connect() = 0;
 
-    // Publish a message.
+    // Publish a message. Throws on failure (incl. a PUBACK error reason code),
+    // so callers can keep a change-detection cache in sync with the broker.
     virtual net::awaitable<void> async_publish(std::string_view topic,
                                                 std::string_view payload,
                                                 bool retain = true) = 0;

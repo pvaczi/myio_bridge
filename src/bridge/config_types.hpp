@@ -18,11 +18,16 @@ enum class OutputType {
 };
 
 // ── PCA output configuration ──────────────────────────────────────────────────
+// writable = false: published read-only (switch/sensor_output → binary_sensor,
+// light/number → sensor in %), no command topic, every /set is dropped.
+// device_class: passed through to the binary_sensor discovery only ("" = none).
 struct PcaConfig {
     int         id;
     std::string name;
     OutputType  type;
     bool        enabled;
+    bool        writable = true;
+    std::string device_class;
 };
 
 // ── Relay output configuration ────────────────────────────────────────────────
@@ -31,6 +36,8 @@ struct RelayConfig {
     std::string name;
     OutputType  type;
     bool        enabled;
+    bool        writable = true;
+    std::string device_class;
 };
 
 // ── Legacy PWM output configuration ──────────────────────────────────────────
@@ -39,6 +46,8 @@ struct PwmConfig {
     std::string name;
     OutputType  type;
     bool        enabled;
+    bool        writable = true;
+    std::string device_class;
 };
 
 // ── Sensor configuration ──────────────────────────────────────────────────────
