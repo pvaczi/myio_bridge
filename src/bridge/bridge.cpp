@@ -783,7 +783,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
         if (e.enabled) pwm_map[e.id] = &e;
 
     // /info.json (firmware version) is fetched by the first publish_discovery;
-    // only if that failed is it retried here, after a successful poll. From
+    // only if that failed is it retried here, after successful polls. From
     // now on discovery does no device HTTP (see publish_discovery).
     poll_started_ = true;
     myio::log("[{}] Poll loop started, interval={}s",
@@ -809,6 +809,12 @@ net::awaitable<void> ServerBridge::poll_loop() {
     // While the device is unreachable (e.g. the multi-minute W5100 lockup),
     // probing it at the normal rate only ties up its sockets — back off instead.
     int consecutive_errors = 0;
+
+    // A still-missing firmware version is retried after the first successful
+    // poll, then only after every kInfoRetryEveryPolls-th one: a device without
+    // a working /info.json must not get an extra request on every poll.
+    constexpr int kInfoRetryEveryPolls = 12;
+    int polls_until_info_retry = 0;
 
     while (true) {
         std::exception_ptr caught;
@@ -1003,7 +1009,8 @@ net::awaitable<void> ServerBridge::poll_loop() {
         // Firmware version still unknown (startup fetch failed): ask the device
         // now, sequentially after the poll, and re-send the discovery so the
         // device block gets its sw_version. A repeated error is logged once.
-        if (!caught && firmware_version_.empty()) {
+        if (!caught && firmware_version_.empty() && polls_until_info_retry-- == 0) {
+            polls_until_info_retry = kInfoRetryEveryPolls - 1;
             const std::string prev_error = last_info_error_;
             if (co_await fetch_server_info()) {
                 co_await publish_discovery();
