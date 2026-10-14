@@ -312,6 +312,29 @@ static net::awaitable<void> run_concurrently(
     if (first_error) std::rethrow_exception(first_error);
 }
 
+// ── Cover motor-timeout safety net ────────────────────────────────────────────
+// Free coroutine (not an immediately-invoked capturing lambda): every value is a
+// by-value parameter, so it lives in the coroutine frame for the whole wait.
+static net::awaitable<void> cover_motor_timeout(
+    std::shared_ptr<ha::IHAPublisher> pub,
+    std::string prefix, std::string sid, std::string cov_id, std::string cov_name,
+    int end_pos, int timeout_sec, std::shared_ptr<bool> cancelled) {
+    try {
+        net::steady_timer t(co_await net::this_coro::executor);
+        t.expires_after(std::chrono::seconds(timeout_sec));
+        co_await t.async_wait(net::use_awaitable);
+        if (*cancelled) co_return;  // STOP was pressed, skip end-position publish
+        co_await pub->async_publish(
+            cover_state_topic(prefix, sid, cov_id), "stopped", true);
+        co_await pub->async_publish(
+            cover_position_topic(prefix, sid, cov_id), std::to_string(end_pos), true);
+        myio::log("[{}] [bridge to broker] Cover {} ({}) → stopped (motor timeout)", sid, cov_id, cov_name);
+    } catch (const std::exception& ex) {
+        myio::log(stderr, "[{}] Cover {} motor timer error: {}",
+                  sid, cov_id, myio::short_what(ex));
+    } catch (...) {}
+}
+
 // ── ServerBridge ──────────────────────────────────────────────────────────────
 
 ServerBridge::ServerBridge(config::ServerConfig               cfg,
@@ -890,25 +913,10 @@ ServerBridge::prepare_command(const std::string& topic,
                     auto flag = std::make_shared<bool>(false);
                     last_cover_cancel_[key] = flag;
                     net::co_spawn(co_await net::this_coro::executor,
-                        [pub = publisher_, prefix = topic_prefix_,
-                         sid = cfg_.server_id, cov_id = c.cover_id, cov_name = c.name,
-                         end_pos, timeout = c.motor_timeout_sec, flag]
-                        () -> net::awaitable<void> {
-                            try {
-                                net::steady_timer t(co_await net::this_coro::executor);
-                                t.expires_after(std::chrono::seconds(timeout));
-                                co_await t.async_wait(net::use_awaitable);
-                                if (*flag) co_return;  // STOP was pressed, skip end-position publish
-                                co_await pub->async_publish(
-                                    cover_state_topic(prefix, sid, cov_id), "stopped", true);
-                                co_await pub->async_publish(
-                                    cover_position_topic(prefix, sid, cov_id), std::to_string(end_pos), true);
-                                myio::log("[{}] [bridge to broker] Cover {} ({}) → stopped (motor timeout)", sid, cov_id, cov_name);
-                            } catch (const std::exception& ex) {
-                                myio::log(stderr, "[{}] Cover {} motor timer error: {}",
-                                          sid, cov_id, myio::short_what(ex));
-                            } catch (...) {}
-                        }(), net::detached);
+                        cover_motor_timeout(publisher_, topic_prefix_, cfg_.server_id,
+                                            c.cover_id, c.name, end_pos,
+                                            c.motor_timeout_sec, flag),
+                        net::detached);
                 }
             }
                 co_return;

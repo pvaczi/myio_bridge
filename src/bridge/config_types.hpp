@@ -52,7 +52,7 @@ struct SensorConfig {
 // ── One end of a cover (shutter) ─────────────────────────────────────────────
 struct CoverEndpoint {
     std::string output_type;  // "pca" or "relay"
-    int         id;
+    int         id = 0;
 };
 
 // ── Cover (shutter / blind) configuration ────────────────────────────────────

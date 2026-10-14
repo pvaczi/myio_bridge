@@ -52,21 +52,32 @@ int main(int argc, char* argv[]) {
         ioc.stop();
     });
 
+    // run() never returns normally (its command loop is endless), so any
+    // completion is fatal: stop the io_context and exit nonzero, otherwise the
+    // poll/worker coroutines keep the process alive as a zombie and systemd
+    // (Restart=on-failure) never restarts it.
+    int exit_code = 0;
     boost::asio::co_spawn(ioc,
         [&br]() -> boost::asio::awaitable<void> {
             co_await br.run();
         },
-        [](std::exception_ptr ep) {
+        [&ioc, &exit_code](std::exception_ptr ep) {
             if (ep) {
                 try { std::rethrow_exception(ep); }
                 catch (const std::exception& ex) {
                     myio::log(stderr, "[bridge] Fatal error: {}", myio::short_what(ex));
+                } catch (...) {
+                    myio::log(stderr, "[bridge] Fatal error: unknown exception");
                 }
+            } else {
+                myio::log(stderr, "[bridge] Fatal error: main loop ended unexpectedly");
             }
+            exit_code = 1;
+            ioc.stop();
         });
 
     myio::log("[bridge] Running. Press Ctrl+C to stop.");
     ioc.run();
     myio::log("[bridge] Done.");
-    return 0;
+    return exit_code;
 }

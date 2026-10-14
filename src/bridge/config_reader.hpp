@@ -11,4 +11,9 @@ namespace config {
 [[nodiscard]]
 BridgeConfig load_bridge_config(std::string_view path);
 
+// Parses and validates bridge.json content (used by load_bridge_config).
+// Throws std::runtime_error on a parse error or an invalid value.
+[[nodiscard]]
+BridgeConfig parse_bridge_config(std::string_view content);
+
 } // namespace config

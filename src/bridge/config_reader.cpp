@@ -44,6 +44,23 @@ static double double_or(const json::object& o, std::string_view key, double fall
     return fallback;
 }
 
+// TCP port: reject values that would silently wrap in the uint16_t cast.
+static std::uint16_t port_or(const json::object& o, std::string_view key, int fallback,
+                             std::string_view ctx) {
+    const int p = int_or(o, key, fallback);
+    if (p < 1 || p > 65535)
+        throw std::runtime_error(std::format("{}: '{}' must be 1..65535 (got {})", ctx, key, p));
+    return static_cast<std::uint16_t>(p);
+}
+
+// Values used as one MQTT topic level: a '/' splits the level (every command
+// topic then fails to match and is silently dropped), '+'/'#' are wildcards.
+static void require_topic_level(std::string_view what, const std::string& v) {
+    if (v.empty() || v.find_first_of("/+#") != std::string::npos)
+        throw std::runtime_error(std::format(
+            "{} '{}' must be non-empty and must not contain '/', '+' or '#'", what, v));
+}
+
 static OutputType parse_output_type(const json::object& o) {
     const auto t = str_or(o, "type", "switch");
     if (t == "light")         return OutputType::Light;
@@ -59,20 +76,26 @@ static OutputType parse_output_type(const json::object& o) {
 static MqttConfig parse_mqtt(const json::object& o) {
     MqttConfig m;
     m.host         = str_or(o, "host",         "localhost");
-    m.port         = static_cast<std::uint16_t>(int_or(o, "port", 1883));
+    m.port         = port_or(o, "port", 1883, "mqtt");
     m.client_id    = str_or(o, "client_id",    "myio_bridge");
     m.user         = str_or(o, "user");
     m.password     = str_or(o, "password");
     m.topic_prefix = str_or(o, "topic_prefix", "myio");
+    require_topic_level("mqtt.topic_prefix", m.topic_prefix);
     return m;
 }
 
 // ── Server config ─────────────────────────────────────────────────────────────
 
-static CoverEndpoint parse_endpoint(const json::object& o) {
+static CoverEndpoint parse_endpoint(const json::object& o, std::string_view ctx) {
     CoverEndpoint ep;
     ep.output_type = str_or(o, "type", "pca");
     ep.id          = int_or(o, "id");
+    // Anything but "relay" is sent as a PCA command → a typo would drive the
+    // wrong output, so only the two known types are accepted.
+    if (ep.output_type != "pca" && ep.output_type != "relay")
+        throw std::runtime_error(std::format(
+            "{}: type must be \"pca\" or \"relay\" (got \"{}\")", ctx, ep.output_type));
     return ep;
 }
 
@@ -80,7 +103,6 @@ static ServerConfig parse_server(const json::object& o) {
     ServerConfig sc;
     sc.server_id         = str_or(o, "id");
     sc.host              = str_or(o, "host");
-    sc.port              = static_cast<std::uint16_t>(int_or(o, "port", 80));
     sc.user              = str_or(o, "user",     "admin");
     sc.password          = str_or(o, "password", "admin");
     sc.poll_interval_sec     = int_or   (o, "poll_interval_sec",    5);
@@ -90,6 +112,14 @@ static ServerConfig parse_server(const json::object& o) {
 
     if (sc.server_id.empty() || sc.host.empty())
         throw std::runtime_error("Server entry requires 'id' and 'host'");
+    require_topic_level("Server id", sc.server_id);
+    const auto ctx = std::format("Server '{}'", sc.server_id);
+    sc.port = port_or(o, "port", 80, ctx);
+    // The W5100 on the myIO board has only 4 sockets: a zero/negative interval
+    // turns the poll loop into a request storm that makes the device unreachable.
+    if (sc.poll_interval_sec <= 0)
+        throw std::runtime_error(std::format(
+            "{}: poll_interval_sec must be > 0 (got {})", ctx, sc.poll_interval_sec));
 
     // Load ALL PCA entries regardless of enabled flag.
     // The bridge sends undiscovery (empty retained message) for disabled entries
@@ -149,10 +179,19 @@ static ServerConfig parse_server(const json::object& o) {
             cc.enabled           = bool_or(e, "enabled");
             cc.motor_timeout_sec = int_or(e, "motor_timeout_sec", 90);
 
-            if (const auto* up   = e.if_contains("up"))
-                cc.up   = parse_endpoint(up->as_object());
-            if (const auto* down = e.if_contains("down"))
-                cc.down = parse_endpoint(down->as_object());
+            if (!cc.cover_id.empty())
+                require_topic_level(std::format("{}: cover id", ctx), cc.cover_id);
+
+            // Both endpoints are mandatory: without them the endpoint id would
+            // be meaningless and the cover would drive an arbitrary output.
+            const auto cov_ctx = std::format("{}: cover '{}'", ctx, cc.cover_id);
+            const auto* up   = e.if_contains("up");
+            const auto* down = e.if_contains("down");
+            if (!up || !up->is_object() || !down || !down->is_object())
+                throw std::runtime_error(std::format(
+                    "{}: requires both 'up' and 'down' endpoint objects", cov_ctx));
+            cc.up   = parse_endpoint(up->as_object(),   cov_ctx + " up");
+            cc.down = parse_endpoint(down->as_object(), cov_ctx + " down");
 
             if (!cc.cover_id.empty() && (cc.up.id > 0 || !cc.enabled))
                 sc.covers.push_back(std::move(cc));
@@ -170,6 +209,10 @@ BridgeConfig load_bridge_config(std::string_view path) {
 
     const std::string content{std::istreambuf_iterator<char>(f),
                                std::istreambuf_iterator<char>()};
+    return parse_bridge_config(content);
+}
+
+BridgeConfig parse_bridge_config(std::string_view content) {
     json::value root;
     try {
         root = json::parse(content);

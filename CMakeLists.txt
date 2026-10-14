@@ -85,12 +85,27 @@ target_link_libraries(common
         Boost::thread
 )
 
+# ── bridge_config (Static Library) ────────────────────────────────────────────
+# bridge.json reader, shared by the bridge executable and the unit tests
+add_library(bridge_config STATIC
+    src/bridge/config_reader.cpp
+)
+
+target_include_directories(bridge_config
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/bridge
+)
+
+target_link_libraries(bridge_config
+    PUBLIC
+        common
+)
+
 # ── bridge (Executable) ───────────────────────────────────────────────────────
 # Main MQTT bridge application
 add_executable(bridge
     src/bridge/main.cpp
     src/bridge/bridge.cpp
-    src/bridge/config_reader.cpp
     src/bridge/mqtt5_publisher.cpp
     src/bridge/async_http_client.cpp
 )
@@ -102,6 +117,7 @@ target_include_directories(bridge
 
 target_link_libraries(bridge
     PRIVATE
+        bridge_config
         common  # inherits common/include and Boost dependencies
 )
 
@@ -117,6 +133,21 @@ target_link_libraries(discovery
     PRIVATE
         common
 )
+
+# ── bridge_tests (Unit tests) ─────────────────────────────────────────────────
+# Dependency-free test executable; run with: ctest --test-dir build
+enable_testing()
+
+add_executable(bridge_tests
+    tests/bridge_tests.cpp
+)
+
+target_link_libraries(bridge_tests
+    PRIVATE
+        bridge_config
+)
+
+add_test(NAME bridge_tests COMMAND bridge_tests)
 
 # ── Windows-specific settings ─────────────────────────────────────────────────
 if(WIN32)
