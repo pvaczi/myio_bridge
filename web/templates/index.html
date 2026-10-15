@@ -294,13 +294,18 @@ function endTypeHtml(name, selected) {
   </select>`;
 }
 
+// Output-row keys edited by an input of their own; collectBridgeEditorData() writes them back
+const OUTPUT_ROW_KEYS = new Set(['id', 'name', 'type', 'enabled', '_sensor_id', 'writable', 'device_class']);
+
 function renderOutputRow(kind, item) {
   const id = item.id ?? '', name = item.name ?? '', type = item.type ?? 'switch';
   const en = item.enabled === true;
   const sensorId = item._sensor_id ?? 0;
-  // Pass-through: all _ fields except _sensor_id (which has an explicit input)
+  const writable = item.writable !== false;
+  const devClass = item.device_class ?? '';
+  // Pass-through: every key without an input of its own, so a visual save never drops a config key
   const extra = {};
-  for (const k of Object.keys(item)) if (k.startsWith('_') && k !== '_sensor_id') extra[k] = item[k];
+  for (const k of Object.keys(item)) if (!OUTPUT_ROW_KEYS.has(k)) extra[k] = item[k];
   return `<div class="ve-row" data-kind="${kind}" data-extra="${esc(JSON.stringify(extra))}">
   <span class="ve-id-badge">#</span>
   <input type="number" name="dev-id" value="${esc(id)}" min="1" style="width:65px" placeholder="ID">
@@ -308,6 +313,9 @@ function renderOutputRow(kind, item) {
   ${typeSelectHtml(type)}
   <span class="ve-id-badge" title="Szenzor ID (0=nincs)">S:</span>
   <input type="number" name="dev-sensor-id" value="${esc(sensorId)}" min="0" style="width:42px" title="Szenzor ID (0=nincs)">
+  <input type="text" name="dev-class" value="${esc(devClass)}" style="width:70px" placeholder="class" title="HA device_class — csak írásvédett kapcsolónál/relénél (binary_sensor), pl. door; üres = nincs">
+  <span class="ve-id-badge" title="HA-ból írható (kikapcsolva: írásvédett, csak állapotot mutat)">W</span>
+  <input type="checkbox" class="form-check-input" name="dev-writable"${writable?' checked':''} title="HA-ból írható (kikapcsolva: írásvédett, csak állapotot mutat)">
   <input type="checkbox" class="form-check-input" name="dev-enabled"${en?' checked':''} title="Engedélyezett">
   <button class="ve-del" onclick="veDeleteRow(this)" title="Törlés">✕</button>
 </div>`;
@@ -539,6 +547,9 @@ function collectBridgeEditorData() {
             ...extra,
           };
           if (sensorId > 0) item._sensor_id = sensorId;
+          if (!row.querySelector('[name=dev-writable]').checked) item.writable = false;
+          const devClass = row.querySelector('[name=dev-class]').value.trim();
+          if (devClass) item.device_class = devClass;
           arr.push(item);
         }
       });
