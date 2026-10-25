@@ -152,6 +152,9 @@ static ServerConfig parse_server(const json::object& o) {
     if (sc.poll_interval_sec <= 0)
         throw std::runtime_error(std::format(
             "{}: poll_interval_sec must be > 0 (got {})", ctx, sc.poll_interval_sec));
+    if (sc.coalesce_window_ms < 0 || sc.coalesce_window_ms > 10000)
+        throw std::runtime_error(std::format(
+            "{}: coalesce_window_ms must be 0..10000 (got {})", ctx, sc.coalesce_window_ms));
 
     // Load ALL PCA entries regardless of enabled flag.
     // The bridge sends undiscovery (empty retained message) for disabled entries
@@ -269,6 +272,13 @@ BridgeConfig parse_bridge_config(std::string_view content) {
     if (const auto* servers = obj.if_contains("servers"))
         for (const auto& srv : servers->as_array())
             cfg.servers.push_back(parse_server(srv.as_object()));
+
+    // Checked last, so a broken server entry reports its own, more specific error.
+    if (cfg.servers.empty())
+        throw std::runtime_error("bridge.json: 'servers' must list at least one server");
+    // Without it the bridge would silently publish to localhost:1883.
+    if (!obj.contains("mqtt"))
+        throw std::runtime_error("bridge.json: missing 'mqtt' section");
 
     return cfg;
 }

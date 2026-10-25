@@ -164,45 +164,28 @@ def bridge_log():
     return jsonify({"ok": True, "lines": "\n".join(lines)})
 
 
-def _validate_bridge_config(cfg):
-    """Server-side sanity checks so a bad value cannot brick the bridge on its
-    next restart. Mirrors what config_reader.cpp would reject or misbehave on."""
-    if not isinstance(cfg, dict):
-        return "a gyökér nem objektum"
-    mqtt = cfg.get("mqtt")
-    if not isinstance(mqtt, dict):
-        return "hiányzó 'mqtt' szekció"
-    port = mqtt.get("port", 1883)
-    if not isinstance(port, int) or not (1 <= port <= 65535):
-        return f"érvénytelen mqtt.port: {port!r}"
-    servers = cfg.get("servers")
-    if not isinstance(servers, list) or not servers:
-        return "hiányzó vagy üres 'servers' lista"
-    for i, srv in enumerate(servers):
-        if not isinstance(srv, dict):
-            return f"servers[{i}] nem objektum"
-        if not srv.get("id") or not srv.get("host"):
-            return f"servers[{i}]: 'id' és 'host' kötelező"
-        for key, lo, hi in (("port", 1, 65535),
-                            ("poll_interval_sec", 1, 3600),
-                            ("coalesce_window_ms", 0, 10000)):
-            if key in srv:
-                v = srv[key]
-                if not isinstance(v, int) or not (lo <= v <= hi):
-                    return f"servers[{i}].{key}: {v!r} (megengedett: {lo}–{hi})"
+def _check_bridge_config(tmp_path):
+    """Runs the bridge's own config parser on the candidate file, so a value the
+    bridge would reject can never be saved. Returns the error text or None."""
+    bridge_bin = os.path.join(BIN_DIR, "bridge")
+    try:
+        result = subprocess.run(
+            [bridge_bin, "--check-config", tmp_path],
+            capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"az ellenőrzés nem futott le: {e}"
+    if result.returncode != 0:
+        return (result.stderr or result.stdout).strip() or f"exit {result.returncode}"
     return None
 
 
 def _save_config(path):
     content = request.get_data(as_text=True)
     try:
-        parsed = json.loads(content)
+        json.loads(content)
     except (json.JSONDecodeError, ValueError) as e:
         return jsonify({"ok": False, "error": str(e)}), 400
-    if path == BRIDGE_JSON:
-        err = _validate_bridge_config(parsed)
-        if err:
-            return jsonify({"ok": False, "error": f"Érvénytelen konfig: {err}"}), 400
     try:
         # Atomic write: an interrupted save must never leave a truncated config
         # behind — the bridge would fail to start on it.
@@ -213,6 +196,11 @@ def _save_config(path):
                 f.flush()
                 os.fsync(f.fileno())
             os.chmod(tmp_path, 0o600)
+            if path == BRIDGE_JSON:
+                err = _check_bridge_config(tmp_path)
+                if err:
+                    os.unlink(tmp_path)
+                    return jsonify({"ok": False, "error": f"Érvénytelen konfig: {err}"}), 400
             os.replace(tmp_path, path)
         except BaseException:
             os.unlink(tmp_path)

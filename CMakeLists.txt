@@ -166,6 +166,15 @@ target_link_libraries(bridge_tests
 
 add_test(NAME bridge_tests COMMAND bridge_tests)
 
+# `bridge --check-config` CLI: exit 0 on a valid file, nonzero on an invalid or missing one
+add_test(NAME check_config_ok
+         COMMAND bridge --check-config ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/check_ok.json)
+add_test(NAME check_config_bad
+         COMMAND bridge --check-config ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/check_bad.json)
+add_test(NAME check_config_missing
+         COMMAND bridge --check-config ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/no_such_file.json)
+set_tests_properties(check_config_bad check_config_missing PROPERTIES WILL_FAIL TRUE)
+
 # ── Windows-specific settings ─────────────────────────────────────────────────
 if(WIN32)
     # Unicode character set

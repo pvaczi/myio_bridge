@@ -1,0 +1,4 @@
+{
+    "mqtt": { "host": "broker" },
+    "servers": [ { "id": "lights", "host": "10.0.0.1" } ]
+}

@@ -81,6 +81,18 @@ void test_poll_interval() {
     CHECK(parse_error(make_config("", R"(, "poll_interval_sec": 1)")).empty());
 }
 
+void test_coalesce_window() {
+    CHECK(rejected_with(make_config("", R"(, "coalesce_window_ms": -1)"), "coalesce_window_ms"));
+    CHECK(rejected_with(make_config("", R"(, "coalesce_window_ms": 10001)"), "coalesce_window_ms"));
+    CHECK(parse_error(make_config("", R"(, "coalesce_window_ms": 0)")).empty());
+}
+
+void test_required_sections() {
+    CHECK(rejected_with(R"({"mqtt":{"host":"b"},"servers":[]})", "servers"));
+    CHECK(rejected_with(R"({"mqtt":{"host":"b"}})", "servers"));
+    CHECK(rejected_with(R"({"servers":[{"id":"a","host":"h"}]})", "mqtt"));
+}
+
 void test_topic_prefix() {
     CHECK(rejected_with(make_config(R"(, "topic_prefix": "")"), "topic_prefix"));
     CHECK(rejected_with(make_config(R"(, "topic_prefix": "my/io")"), "topic_prefix"));
@@ -512,6 +524,8 @@ void test_discovery_merge() {
 int main() {
     test_valid_config();
     test_poll_interval();
+    test_coalesce_window();
+    test_required_sections();
     test_topic_prefix();
     test_server_id_and_ports();
     test_cover_endpoints();

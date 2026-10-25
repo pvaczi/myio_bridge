@@ -161,12 +161,15 @@ Optional per-output keys (`pca`, `relays`, `pwm`):
 
 The bridge refuses to start (config error) if:
 
-- `poll_interval_sec` ≤ 0;
+- the `mqtt` section is missing, or `servers` is missing or empty;
+- `poll_interval_sec` ≤ 0, or `coalesce_window_ms` is outside 0..10000;
 - `mqtt.topic_prefix`, a server `id` or a cover `id` is empty or contains `/`, `+` or `#` (each must be a single topic level);
 - a server `id` is `bridge` (reserved for the bridge availability topic);
 - `mqtt.port` or a server `port` is outside 1..65535;
 - a cover lacks the `up` or `down` object, or an endpoint `type` is not `"pca"` or `"relay"`;
 - `writable` is not a boolean, or is `false` on a cover or on a `cover_up`/`cover_down` output.
+
+`./bridge --check-config bridge.json` runs the same checks without connecting anywhere (exit 0 = valid, 1 = the error on stderr). The Web UI runs it on every `bridge.json` save and refuses an invalid file.
 
 ### Step 4 — Run the bridge
 

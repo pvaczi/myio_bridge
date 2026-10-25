@@ -25,6 +25,20 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    // Validates a config without touching the network; the Web UI runs it on
+    // the temp file before the atomic swap, so one parser is the only judge.
+    if (argc > 1 && std::string_view(argv[1]) == "--check-config") {
+        const std::string path = (argc > 2) ? argv[2] : "bridge.json";
+        try {
+            const auto cfg = config::load_bridge_config(path);
+            std::println("Config OK: {} server(s)", cfg.servers.size());
+            return 0;
+        } catch (const std::exception& ex) {
+            std::println(stderr, "{}", ex.what());
+            return 1;
+        }
+    }
+
     const std::string config_path = (argc > 1) ? argv[1] : "bridge.json";
 
     myio::log("[bridge] version {}", BRIDGE_VERSION);
