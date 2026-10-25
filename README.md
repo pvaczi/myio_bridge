@@ -320,6 +320,15 @@ Home Assistant auto-discovery messages are published to the standard `homeassist
 - Every entity lists both topics with `availability_mode: all` — it is available only while the bridge and its server are both online.
 - A diagnostic `binary_sensor` (`myIO bridge` device, device class `connectivity`) shows the bridge's state from the bridge availability topic; it has no availability of its own.
 
+### Diagnostic entities
+
+Zero extra requests reach the myIO devices: everything comes from the already running poll.
+
+- **Per server** (`myIO <server>` device, `entity_category: diagnostic`): the retained JSON topic `<prefix>/<server_id>/diag` (`last_poll_ok`, `poll_latency_ms`, `consecutive_errors`, `total_errors`, `last_error`, `firmware`, `info_error`) feeds seven sensors: **Utolsó sikeres poll** (`timestamp`), **Poll-késleltetés** (`duration`, ms — the time of the last successful `async_poll()`), **Egymást követő poll-hibák**, **Poll-hibák (indulás óta)** (`total_increasing`, resets at bridge start), **Utolsó poll-hiba** (kept after recovery, `nincs` if none), **Firmware-verzió** and **Utolsó info-hiba**. Unique ids: `myio_<server>_diag_<last_poll|poll_latency|consecutive_errors|total_errors|last_error|firmware|info_error>`.
+- The diag JSON is published after a poll when it is the first one, after a resync or a firmware change, when the error state changed (first failure, recovery, new error message), and otherwise at most every 60 s. A failed publish is retried after the next poll.
+- These sensors use **only the bridge availability topic**, not the server's, so they stay visible (and show the error) while the server is offline.
+- **Bridge** (`myIO bridge` device): the **Indulás** sensor (`timestamp`, `entity_category: diagnostic`, unique id `myio_bridge_started`) shows the bridge process start time from the retained `<prefix>/bridge/started` topic, republished with every `online` (startup and reconnect).
+
 ## Command latency & TCP delayed-ACK
 
 ### The coalesce window

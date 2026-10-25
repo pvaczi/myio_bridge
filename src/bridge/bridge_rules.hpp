@@ -10,6 +10,7 @@
 #include <boost/json/array.hpp>
 #include <boost/json/object.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -150,5 +151,46 @@ std::string make_bridge_button_discovery(std::string_view prefix,
 std::optional<BridgeButton> bridge_button_pressed(std::string_view prefix,
                                                   std::string_view topic,
                                                   std::string_view payload);
+
+// ── Diagnostics ───────────────────────────────────────────────────────────────
+// Per-server poll diagnostics (HA diagnostic sensors) and the bridge start time.
+// Built purely from what the existing poll already measured — no extra request
+// ever reaches the myIO device.
+
+// "YYYY-MM-DDTHH:MM:SSZ" (UTC, whole seconds).
+std::string format_iso_utc(std::chrono::system_clock::time_point t);
+
+// Inputs of the per-server diag JSON; nullopt serializes as JSON null.
+struct ServerDiag {
+    std::optional<std::chrono::system_clock::time_point> last_poll_ok;
+    std::optional<int> poll_latency_ms;     // last successful async_poll() call
+    int         consecutive_errors = 0;
+    long long   total_errors       = 0;     // failed polls since bridge start
+    std::string last_error;                 // most recent poll error, kept after recovery
+    std::string firmware;                   // "" = unknown
+    std::string info_error;                 // "" once an /info.json fetch succeeded
+};
+
+// "<prefix>/<server_id>/diag" (retained JSON state of the server diagnostics)
+std::string server_diag_topic(std::string_view prefix, std::string_view server_id);
+std::string make_server_diag_state(const ServerDiag& d);
+
+enum class DiagEntity { LastPoll, PollLatency, ConsecutiveErrors, TotalErrors,
+                        LastError, Firmware, InfoError };
+inline constexpr DiagEntity kServerDiagEntities[] = {
+    DiagEntity::LastPoll, DiagEntity::PollLatency, DiagEntity::ConsecutiveErrors,
+    DiagEntity::TotalErrors, DiagEntity::LastError, DiagEntity::Firmware, DiagEntity::InfoError };
+
+// "homeassistant/sensor/myio_<server>_diag_<key>/config"
+std::string server_diag_discovery_topic(std::string_view server_id, DiagEntity e);
+// Diagnostic sensor on the server device. Available on the BRIDGE topic only, not
+// the server's: the diagnostics must stay visible while the server is offline.
+std::string make_server_diag_discovery(const DiscoveryContext& ctx, DiagEntity e);
+
+// "<prefix>/bridge/started" (retained ISO-8601 UTC start time of the bridge process)
+std::string bridge_started_topic(std::string_view prefix);
+std::string bridge_started_discovery_topic();
+std::string make_bridge_started_discovery(std::string_view prefix,
+                                          std::string_view bridge_version);
 
 } // namespace bridge

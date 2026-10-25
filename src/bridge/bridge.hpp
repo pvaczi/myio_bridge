@@ -189,6 +189,21 @@ private:
 
     std::string last_poll_error_;
     bool        syncing_ = false;   // true during startup/resync poll — tags log lines as [startup sync]
+
+    // Poll diagnostics (published as the retained diag JSON, see ServerDiag).
+    // consecutive_errors_ also drives the poll backoff and the offline threshold.
+    int         consecutive_errors_ = 0;
+    long long   total_errors_       = 0;
+    std::string last_error_;        // like last_poll_error_ but kept after recovery
+    std::optional<std::chrono::system_clock::time_point> last_poll_ok_;
+    std::optional<int> last_poll_latency_ms_;
+    // Publish the diag JSON next cycle regardless of change/age; nullopt time = never published.
+    bool        diag_force_ = false;
+    std::optional<std::chrono::steady_clock::time_point> diag_published_at_;
+    std::string diag_published_firmware_;  // firmware in the last published diag
+    // Publishes the diag JSON when due (first, forced, error state changed, or
+    // >= 60 s old). A failed publish is logged and retried next cycle.
+    net::awaitable<void> update_diag(bool error_state_changed);
 };
 
 // ── Bridge – top-level coordinator for all servers ────────────────────────────
@@ -228,6 +243,9 @@ private:
     // Retained "online" on the bridge availability topic; errors are logged.
     net::awaitable<void> publish_bridge_online();
 
+    // Retained start time of this bridge process; errors are logged.
+    net::awaitable<void> publish_bridge_started();
+
     // Re-sends discovery after `delay` in a detached coroutine, so command
     // processing is not blocked; requests that arrive while one is pending are
     // coalesced into it.
@@ -245,6 +263,8 @@ private:
     std::vector<std::unique_ptr<ServerBridge>> servers_;
     bool                                       discovery_resend_pending_ = false;
     bool                                       stopping_ = false;
+    // Captured once at process start; republished with every "online".
+    std::chrono::system_clock::time_point      started_at_ = std::chrono::system_clock::now();
 };
 
 } // namespace bridge

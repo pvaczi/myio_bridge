@@ -6,6 +6,8 @@
 
 #include <boost/json.hpp>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -441,6 +443,99 @@ const json::object* find_entry(const json::object& srv, const char* section, std
     return nullptr;
 }
 
+void test_diagnostics() {
+    namespace json = boost::json;
+    using namespace std::chrono;
+
+    // Timestamp: whole seconds, UTC, trailing Z.
+    CHECK(bridge::format_iso_utc(sys_days{year{2026} / 10 / 14} + hours{8} + minutes{5} + seconds{9} +
+                                 milliseconds{750}) == "2026-10-14T08:05:09Z");
+
+    // Nothing measured yet: nullable fields are JSON null.
+    bridge::ServerDiag d;
+    auto s = json::parse(bridge::make_server_diag_state(d)).as_object();
+    CHECK(s.at("last_poll_ok").is_null());
+    CHECK(s.at("poll_latency_ms").is_null());
+    CHECK(s.at("consecutive_errors").as_int64() == 0);
+    CHECK(s.at("total_errors").as_int64() == 0);
+    CHECK(s.at("last_error").as_string() == "");
+    CHECK(s.at("firmware").as_string() == "");
+    CHECK(s.at("info_error").as_string() == "");
+
+    d.last_poll_ok       = sys_days{year{2026} / 1 / 2} + hours{3};
+    d.poll_latency_ms    = 412;
+    d.consecutive_errors = 2;
+    d.total_errors       = 7;
+    d.last_error         = "timeout";
+    d.firmware           = "3.9";
+    d.info_error         = "refused";
+    s = json::parse(bridge::make_server_diag_state(d)).as_object();
+    CHECK(s.at("last_poll_ok").as_string() == "2026-01-02T03:00:00Z");
+    CHECK(s.at("poll_latency_ms").as_int64() == 412);
+    CHECK(s.at("consecutive_errors").as_int64() == 2);
+    CHECK(s.at("total_errors").as_int64() == 7);
+    CHECK(s.at("last_error").as_string() == "timeout");
+    CHECK(s.at("firmware").as_string() == "3.9");
+    CHECK(s.at("info_error").as_string() == "refused");
+
+    CHECK(bridge::server_diag_topic("myio", "lighting") == "myio/lighting/diag");
+
+    bridge::DiscoveryContext ctx;
+    ctx.prefix         = "myio";
+    ctx.server_id      = "lighting";
+    ctx.host           = "10.0.0.5";
+    ctx.bridge_version = "v1.7.0";
+
+    // Every server diag entity: diagnostic, bridge availability ONLY (visible
+    // while the server is offline), the diag state topic, own unique_id/topic.
+    std::vector<std::string> uids;
+    for (const auto e : bridge::kServerDiagEntities) {
+        const auto o = json::parse(bridge::make_server_diag_discovery(ctx, e)).as_object();
+        CHECK(o.at("entity_category").as_string() == "diagnostic");
+        CHECK(o.at("availability_topic").as_string() == "myio/bridge/availability");
+        CHECK(!o.contains("availability"));
+        CHECK(!o.contains("availability_mode"));
+        CHECK(o.at("state_topic").as_string() == "myio/lighting/diag");
+        CHECK(o.at("device").as_object().at("identifiers").as_array().at(0).as_string() == "myio_lighting");
+        CHECK(o.at("origin").as_object().at("sw_version").as_string() == "v1.7.0");
+        const std::string uid = std::string(o.at("unique_id").as_string());
+        CHECK(uid.starts_with("myio_lighting_diag_"));
+        CHECK(o.at("default_entity_id").as_string() == "sensor." + uid);
+        CHECK(bridge::server_diag_discovery_topic("lighting", e) ==
+              "homeassistant/sensor/" + uid + "/config");
+        uids.push_back(uid);
+    }
+    std::ranges::sort(uids);
+    CHECK(std::ranges::adjacent_find(uids) == uids.end());   // all distinct
+    CHECK(uids.size() == 7);
+
+    const auto lat = json::parse(
+        bridge::make_server_diag_discovery(ctx, bridge::DiagEntity::PollLatency)).as_object();
+    CHECK(lat.at("unique_id").as_string() == "myio_lighting_diag_poll_latency");
+    CHECK(lat.at("device_class").as_string() == "duration");
+    CHECK(lat.at("unit_of_measurement").as_string() == "ms");
+    CHECK(lat.at("state_class").as_string() == "measurement");
+    const auto lp = json::parse(
+        bridge::make_server_diag_discovery(ctx, bridge::DiagEntity::LastPoll)).as_object();
+    CHECK(lp.at("device_class").as_string() == "timestamp");
+    CHECK(!lp.contains("unit_of_measurement"));
+    const auto te = json::parse(
+        bridge::make_server_diag_discovery(ctx, bridge::DiagEntity::TotalErrors)).as_object();
+    CHECK(te.at("state_class").as_string() == "total_increasing");
+
+    // Bridge start time sensor.
+    CHECK(bridge::bridge_started_topic("myio") == "myio/bridge/started");
+    CHECK(bridge::bridge_started_discovery_topic() == "homeassistant/sensor/myio_bridge_started/config");
+    const auto bs = json::parse(bridge::make_bridge_started_discovery("myio", "v1.7.0")).as_object();
+    CHECK(bs.at("unique_id").as_string() == "myio_bridge_started");
+    CHECK(bs.at("default_entity_id").as_string() == "sensor.myio_bridge_started");
+    CHECK(bs.at("state_topic").as_string() == "myio/bridge/started");
+    CHECK(bs.at("availability_topic").as_string() == "myio/bridge/availability");
+    CHECK(bs.at("device_class").as_string() == "timestamp");
+    CHECK(bs.at("entity_category").as_string() == "diagnostic");
+    CHECK(bs.at("device").as_object().at("identifiers").as_array().at(0).as_string() == "myio_bridge");
+}
+
 void test_discovery_merge() {
     const auto existing = obj(R"({
         "id": "lighting", "host": "10.0.0.5", "port": 8080, "user": "u", "password": "secret",
@@ -570,6 +665,7 @@ int main() {
     test_availability();
     test_sensor_class();
     test_discovery_blocks();
+    test_diagnostics();
     test_discovery_merge();
 
     std::printf("%d/%d checks passed\n", g_checks - g_failures, g_checks);

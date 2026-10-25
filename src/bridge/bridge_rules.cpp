@@ -283,4 +283,118 @@ std::optional<BridgeButton> bridge_button_pressed(std::string_view prefix,
     return std::nullopt;
 }
 
+// ── Diagnostics ───────────────────────────────────────────────────────────────
+
+std::string format_iso_utc(std::chrono::system_clock::time_point t) {
+    return std::format("{:%FT%TZ}", std::chrono::floor<std::chrono::seconds>(t));
+}
+
+std::string server_diag_topic(std::string_view prefix, std::string_view server_id) {
+    return std::format("{}/{}/diag", prefix, server_id);
+}
+
+std::string make_server_diag_state(const ServerDiag& d) {
+    json::object o{
+        {"last_poll_ok",       d.last_poll_ok ? json::value(format_iso_utc(*d.last_poll_ok))
+                                              : json::value(nullptr)},
+        {"poll_latency_ms",    d.poll_latency_ms ? json::value(*d.poll_latency_ms)
+                                                 : json::value(nullptr)},
+        {"consecutive_errors", d.consecutive_errors},
+        {"total_errors",       d.total_errors},
+        {"last_error",         d.last_error},
+        {"firmware",           d.firmware},
+        {"info_error",         d.info_error},
+    };
+    return json::serialize(o);
+}
+
+namespace {
+struct DiagMeta {
+    std::string_view key;       // unique_id / topic suffix and diag JSON field group
+    std::string_view name;      // HA entity name (shown to the user)
+    std::string_view icon;      // "" = none
+    std::string_view value_template;
+    std::string_view device_class;  // "" = none
+    std::string_view unit;          // "" = none
+    std::string_view state_class;   // "" = none
+};
+
+DiagMeta diag_meta(DiagEntity e) {
+    switch (e) {
+        case DiagEntity::LastPoll:
+            return {"last_poll", "Utolsó sikeres poll", "",
+                    "{{ value_json.last_poll_ok }}", "timestamp", "", ""};
+        case DiagEntity::PollLatency:
+            return {"poll_latency", "Poll-késleltetés", "",
+                    "{{ value_json.poll_latency_ms }}", "duration", "ms", "measurement"};
+        case DiagEntity::ConsecutiveErrors:
+            return {"consecutive_errors", "Egymást követő poll-hibák", "mdi:alert-circle-outline",
+                    "{{ value_json.consecutive_errors }}", "", "", "measurement"};
+        case DiagEntity::TotalErrors:
+            return {"total_errors", "Poll-hibák (indulás óta)", "mdi:counter",
+                    "{{ value_json.total_errors }}", "", "", "total_increasing"};
+        case DiagEntity::LastError:
+            return {"last_error", "Utolsó poll-hiba", "mdi:alert",
+                    "{{ value_json.last_error if value_json.last_error else 'nincs' }}", "", "", ""};
+        case DiagEntity::Firmware:
+            return {"firmware", "Firmware-verzió", "mdi:chip",
+                    "{{ value_json.firmware if value_json.firmware else 'ismeretlen' }}", "", "", ""};
+        case DiagEntity::InfoError:
+            return {"info_error", "Utolsó info-hiba", "mdi:alert",
+                    "{{ value_json.info_error if value_json.info_error else 'nincs' }}", "", "", ""};
+    }
+    return {};
+}
+} // namespace
+
+std::string server_diag_discovery_topic(std::string_view server_id, DiagEntity e) {
+    return std::format("homeassistant/sensor/myio_{}_diag_{}/config", server_id, diag_meta(e).key);
+}
+
+std::string make_server_diag_discovery(const DiscoveryContext& ctx, DiagEntity e) {
+    const auto m = diag_meta(e);
+    const std::string uid = std::format("myio_{}_diag_{}", ctx.server_id, m.key);
+    json::object o{
+        {"name",               m.name},
+        {"unique_id",          uid},
+        {"default_entity_id",  std::format("sensor.{}", uid)},
+        {"state_topic",        server_diag_topic(ctx.prefix, ctx.server_id)},
+        {"value_template",     m.value_template},
+        // Bridge topic only: the diagnostics must stay visible while the server is offline.
+        {"availability_topic", bridge_availability_topic(ctx.prefix)},
+        {"entity_category",    "diagnostic"},
+        {"device",             server_device_block(ctx)},
+        {"origin",             origin_block(ctx.bridge_version)},
+    };
+    if (!m.icon.empty())         o["icon"]                = m.icon;
+    if (!m.device_class.empty()) o["device_class"]        = m.device_class;
+    if (!m.unit.empty())         o["unit_of_measurement"] = m.unit;
+    if (!m.state_class.empty())  o["state_class"]         = m.state_class;
+    return json::serialize(o);
+}
+
+std::string bridge_started_topic(std::string_view prefix) {
+    return std::format("{}/bridge/started", prefix);
+}
+
+std::string bridge_started_discovery_topic() {
+    return std::format("homeassistant/sensor/{}_started/config", kBridgeDeviceId);
+}
+
+std::string make_bridge_started_discovery(std::string_view prefix,
+                                          std::string_view bridge_version) {
+    json::object o{
+        {"name",               "Indulás"},
+        {"unique_id",          std::format("{}_started", kBridgeDeviceId)},
+        {"default_entity_id",  std::format("sensor.{}_started", kBridgeDeviceId)},
+        {"state_topic",        bridge_started_topic(prefix)},
+        {"availability_topic", bridge_availability_topic(prefix)},
+        {"device_class",       "timestamp"},
+        {"entity_category",    "diagnostic"},
+        {"device",             bridge_device_block(bridge_version)},
+        {"origin",             origin_block(bridge_version)},
+    };
+    return json::serialize(o);
+}
+
 } // namespace bridge

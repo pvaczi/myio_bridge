@@ -426,6 +426,7 @@ net::awaitable<bool> ServerBridge::fetch_server_info() {
                   cfg_.server_id, info.version, info.cpu, info.serial,
                   info.relay_count, info.pca_count, info.api);
         firmware_version_ = info.version;
+        last_info_error_.clear();
         co_return true;
     } catch (const std::exception& ex) {
         last_info_error_ = myio::short_what(ex);
@@ -555,6 +556,10 @@ net::awaitable<void> ServerBridge::publish_discovery() {
             co_await publish(dtopic, "");
         }
     }
+
+    // Diagnostic sensors (state: the diag JSON, published by poll_loop).
+    for (const auto d : kServerDiagEntities)
+        co_await publish(server_diag_discovery_topic(s, d), make_server_diag_discovery(ctx, d));
 
     if (failures > 0)
         myio::log(stderr, "[{}] Discovery: {} publish(es) failed, first: {}",
@@ -710,6 +715,7 @@ void ServerBridge::schedule_resync() {
     for (auto& [id, v] : last_sensor_val_)        v = std::numeric_limits<double>::max();
     for (auto& [id, v] : last_sensor_logged_val_) v = std::numeric_limits<double>::max();
     published_available_.reset();  // republish the server availability too
+    diag_force_ = true;            // ... and the diag JSON
     syncing_ = true;
     myio::log("[{}] State resync scheduled.", cfg_.server_id);
 }
@@ -729,6 +735,37 @@ net::awaitable<void> ServerBridge::update_availability(bool online) {
         // Cache unchanged → retried after the next poll.
         myio::log(stderr, "[{}] Availability publish failed: {}",
                   cfg_.server_id, myio::short_what(ex));
+    }
+}
+
+// ── Diagnostics ───────────────────────────────────────────────────────────────
+
+net::awaitable<void> ServerBridge::update_diag(bool error_state_changed) {
+    constexpr auto kDiagRefresh = std::chrono::seconds(60);
+    const auto now = std::chrono::steady_clock::now();
+    const bool due = !diag_published_at_ || diag_force_ || error_state_changed ||
+                     firmware_version_ != diag_published_firmware_ ||
+                     now - *diag_published_at_ >= kDiagRefresh;
+    if (!due) co_return;
+
+    ServerDiag d;
+    d.last_poll_ok       = last_poll_ok_;
+    d.poll_latency_ms    = last_poll_latency_ms_;
+    d.consecutive_errors = consecutive_errors_;
+    d.total_errors       = total_errors_;
+    d.last_error         = last_error_;
+    d.firmware           = firmware_version_;
+    d.info_error         = last_info_error_;
+    try {
+        co_await publisher_->async_publish(server_diag_topic(topic_prefix_, cfg_.server_id),
+                                           make_server_diag_state(d), true);
+        diag_published_at_      = now;
+        diag_published_firmware_ = d.firmware;
+        diag_force_             = false;
+    } catch (const std::exception& ex) {
+        // Forced retry after the next poll (the trigger may not recur).
+        diag_force_ = true;
+        myio::log(stderr, "[{}] Diag publish failed: {}", cfg_.server_id, myio::short_what(ex));
     }
 }
 
@@ -808,7 +845,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
 
     // While the device is unreachable (e.g. the multi-minute W5100 lockup),
     // probing it at the normal rate only ties up its sockets — back off instead.
-    int consecutive_errors = 0;
+    // (consecutive_errors_ is a member: it is also published in the diag JSON.)
 
     // A still-missing firmware version is retried after the first successful
     // poll, then only after every kInfoRetryEveryPolls-th one: a device without
@@ -818,8 +855,12 @@ net::awaitable<void> ServerBridge::poll_loop() {
 
     while (true) {
         std::exception_ptr caught;
+        std::optional<int> poll_ms;   // latency of this cycle's async_poll(), if it succeeded
         try {
+            const auto poll_t0 = std::chrono::steady_clock::now();
             const auto state = co_await client_->async_poll();
+            poll_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - poll_t0).count());
             co_await update_pca_capabilities(state);
 
             // Publishes for this cycle are collected here and fired concurrently
@@ -975,13 +1016,18 @@ net::awaitable<void> ServerBridge::poll_loop() {
             caught = std::current_exception();
         }
         auto delay = std::chrono::seconds(cfg_.poll_interval_sec);
+        bool diag_error_changed = false;   // error state differs from the previous cycle
         if (caught) {
-            ++consecutive_errors;
-            const int shift = std::min(consecutive_errors, 4);
+            diag_error_changed = (consecutive_errors_ == 0);
+            ++consecutive_errors_;
+            ++total_errors_;
+            const int shift = std::min(consecutive_errors_, 4);
             delay = std::min(delay * (1 << shift), std::chrono::seconds(120));
             try { std::rethrow_exception(caught); }
             catch (const std::exception& ex) {
                 std::string msg = myio::short_what(ex);
+                if (msg != last_error_) diag_error_changed = true;
+                last_error_ = msg;
                 if (msg == last_poll_error_) {
                     myio::log(stderr, "[{}] Poll error: (same as previous, retry in {}s)",
                               cfg_.server_id, delay.count());
@@ -991,10 +1037,14 @@ net::awaitable<void> ServerBridge::poll_loop() {
                 }
             }
         } else {
-            if (consecutive_errors > 0)
+            if (consecutive_errors_ > 0) {
                 myio::log("[{}] Poll recovered after {} failed attempt(s).",
-                          cfg_.server_id, consecutive_errors);
-            consecutive_errors = 0;
+                          cfg_.server_id, consecutive_errors_);
+                diag_error_changed = true;
+            }
+            consecutive_errors_ = 0;
+            last_poll_ok_         = std::chrono::system_clock::now();
+            last_poll_latency_ms_ = poll_ms;
             last_poll_error_.clear();
             syncing_ = false;
         }
@@ -1003,7 +1053,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
         constexpr int kOfflineAfterFailedPolls = 3;
         if (!caught)
             co_await update_availability(true);
-        else if (consecutive_errors >= kOfflineAfterFailedPolls)
+        else if (consecutive_errors_ >= kOfflineAfterFailedPolls)
             co_await update_availability(false);
 
         // Firmware version still unknown (startup fetch failed): ask the device
@@ -1019,6 +1069,8 @@ net::awaitable<void> ServerBridge::poll_loop() {
                           cfg_.server_id, last_info_error_);
             }
         }
+
+        co_await update_diag(diag_error_changed);
 
         net::steady_timer timer(ex);
         timer.expires_after(delay);
@@ -1470,6 +1522,14 @@ net::awaitable<void> Bridge::publish_all_discovery() {
                       myio::short_what(ex));
         }
     }
+    try {
+        co_await publisher_->async_publish(
+            bridge_started_discovery_topic(),
+            make_bridge_started_discovery(cfg_.mqtt.topic_prefix, BRIDGE_VERSION), true);
+    } catch (const std::exception& ex) {
+        myio::log(stderr, "[bridge] Bridge start-time discovery publish failed: {}",
+                  myio::short_what(ex));
+    }
     // All servers' discovery is independent — publish it concurrently instead
     // of waiting for each server's full discovery (incl. its info fetch and
     // capability poll) to finish before starting the next one.
@@ -1483,6 +1543,16 @@ net::awaitable<void> Bridge::publish_bridge_online() {
         myio::log("[bridge] [bridge to broker] Availability → {}", kAvailabilityOnline);
     } catch (const std::exception& ex) {
         myio::log(stderr, "[bridge] Availability publish failed: {}", myio::short_what(ex));
+    }
+    co_await publish_bridge_started();
+}
+
+net::awaitable<void> Bridge::publish_bridge_started() {
+    try {
+        co_await publisher_->async_publish(
+            bridge_started_topic(cfg_.mqtt.topic_prefix), format_iso_utc(started_at_), true);
+    } catch (const std::exception& ex) {
+        myio::log(stderr, "[bridge] Start-time publish failed: {}", myio::short_what(ex));
     }
 }
 
