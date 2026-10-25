@@ -4,7 +4,12 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+# READY=1 is sent as soon as the event loop runs (not on MQTT connect);
+# WATCHDOG=1 every WatchdogSec/2 proves the loop is alive. A missed ping kills
+# the process (SIGABRT) and Restart=on-failure brings it back.
+Type=notify
+NotifyAccess=main
+WatchdogSec=60
 User=myio
 ExecStart=/opt/myio-bridge/bin/bridge /opt/myio-bridge/data/bridge.json
 Restart=on-failure

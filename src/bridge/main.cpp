@@ -1,9 +1,11 @@
 #include "bridge.hpp"
 #include "config_reader.hpp"
 #include "mqtt5_publisher.hpp"
+#include "sd_notify.hpp"
 #include <log.hpp>
 
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/signal_set.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -73,6 +75,7 @@ int main(int argc, char* argv[]) {
     signals.async_wait([&](auto, auto) {
         std::println();
         myio::log("[bridge] Shutting down...");
+        sdnotify::notify("STOPPING=1");
         // Set before anything is aborted: run()'s completion must not report
         // the stop as a fatal error.
         br.request_stop();
@@ -107,6 +110,26 @@ int main(int argc, char* argv[]) {
             exit_code = 1;
             ioc.stop();
         });
+
+    // READY=1 from the first handler the io_context runs — deliberately not tied
+    // to MQTT, so a broker that is down at boot cannot fail the unit start. The
+    // watchdog ping then proves only that the event loop turns: it must not
+    // depend on myIO poll success or MQTT state.
+    boost::asio::co_spawn(ioc,
+        []() -> boost::asio::awaitable<void> {
+            sdnotify::notify("READY=1");
+            const auto period = sdnotify::watchdog_period_from_env();
+            if (!period) co_return;
+            myio::log("[bridge] systemd watchdog: ping every {} ms",
+                      std::chrono::duration_cast<std::chrono::milliseconds>(*period).count());
+            boost::asio::steady_timer timer(co_await boost::asio::this_coro::executor);
+            for (;;) {
+                timer.expires_after(*period);
+                co_await timer.async_wait(boost::asio::use_awaitable);
+                sdnotify::notify("WATCHDOG=1");
+            }
+        },
+        [](std::exception_ptr) {});
 
     myio::log("[bridge] Running. Press Ctrl+C to stop.");
     ioc.run();

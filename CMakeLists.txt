@@ -90,6 +90,7 @@ target_link_libraries(common
 add_library(bridge_config STATIC
     src/bridge/config_reader.cpp
     src/bridge/bridge_rules.cpp
+    src/bridge/sd_notify.cpp
 )
 
 target_include_directories(bridge_config

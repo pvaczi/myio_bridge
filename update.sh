@@ -123,6 +123,33 @@ if [ "$INSTALL_OK" -ne 1 ]; then
     exit 1
 fi
 
+# --- unit fájlok szinkronizálása (a restart ELŐTT) ---
+# Az install.sh ugyanezeket másolja (templating nélkül), a repó a forrás.
+# A régi unit a $BIN_DIR-be kerül mentésre: rollbacknél a régi bináris a régi
+# unittal indul (egy Type=notify unit alatt a READY-t nem küldő bináris
+# start-timeoutba futna).
+UNITS_CHANGED=0
+CHANGED_UNITS=""
+for u in myio-bridge.service myio-web.service; do
+    if ! cmp -s "$SRC_DIR/$u" "/etc/systemd/system/$u"; then
+        [ -f "/etc/systemd/system/$u" ] && cp -a "/etc/systemd/system/$u" "$BIN_DIR/$u.bak"
+        cp "$SRC_DIR/$u" "/etc/systemd/system/$u"
+        echo "Unit frissítve: $u"
+        UNITS_CHANGED=1
+        CHANGED_UNITS="$CHANGED_UNITS $u"
+    fi
+done
+if [ "$UNITS_CHANGED" -eq 1 ]; then
+    systemctl daemon-reload
+fi
+rollback_units() {
+    [ "$UNITS_CHANGED" -eq 1 ] || return 0
+    for u in $CHANGED_UNITS; do
+        [ -f "$BIN_DIR/$u.bak" ] && mv -f "$BIN_DIR/$u.bak" "/etc/systemd/system/$u"
+    done
+    systemctl daemon-reload
+}
+
 # --- restart + rollback, ha az új bináris nem indul ---
 # A .bak fájlokat sikeres frissítés után is MEGTARTJUK (last-known-good) —
 # a következő frissítés úgyis felülírja őket.
@@ -135,6 +162,7 @@ if [ "$BRIDGE_WAS_RUNNING" -eq 1 ]; then
     else
         echo "Hiba: az új bridge nem indult el — visszaállítás a mentett binárisra." >&2
         rollback
+        rollback_units
         systemctl restart myio-bridge || true
         exit 1
     fi

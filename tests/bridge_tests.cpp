@@ -3,6 +3,7 @@
 #include "bridge_rules.hpp"
 #include "config_reader.hpp"
 #include "merge.hpp"
+#include "sd_notify.hpp"
 
 #include <boost/json.hpp>
 
@@ -655,6 +656,26 @@ void test_discovery_merge() {
     CHECK(discovery::find_server(root, "zz") == nullptr);
 }
 
+void test_sd_notify() {
+    using std::chrono::microseconds;
+    CHECK(sdnotify::socket_address(nullptr).empty());
+    CHECK(sdnotify::socket_address("").empty());
+    CHECK(sdnotify::socket_address("relative/path").empty());
+    CHECK(sdnotify::socket_address("/run/systemd/notify") == "/run/systemd/notify");
+    CHECK(sdnotify::socket_address("@abstract") == std::string("\0abstract", 9));
+
+    CHECK(sdnotify::watchdog_period("60000000", nullptr, 42) == microseconds{30000000});
+    CHECK(sdnotify::watchdog_period("60000000", "", 42) == microseconds{30000000});
+    CHECK(sdnotify::watchdog_period("60000000", "42", 42) == microseconds{30000000});
+    CHECK(!sdnotify::watchdog_period("60000000", "43", 42));
+    CHECK(!sdnotify::watchdog_period(nullptr, nullptr, 42));
+    CHECK(!sdnotify::watchdog_period("", nullptr, 42));
+    CHECK(!sdnotify::watchdog_period("0", nullptr, 42));
+    CHECK(!sdnotify::watchdog_period("-5", nullptr, 42));
+    CHECK(!sdnotify::watchdog_period("12abc", nullptr, 42));
+    CHECK(!sdnotify::watchdog_period("60000000", "x", 42));
+}
+
 } // namespace
 
 int main() {
@@ -681,6 +702,7 @@ int main() {
     test_discovery_blocks();
     test_diagnostics();
     test_discovery_merge();
+    test_sd_notify();
 
     std::printf("%d/%d checks passed\n", g_checks - g_failures, g_checks);
     return g_failures == 0 ? 0 : 1;

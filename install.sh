@@ -86,29 +86,8 @@ done
 info "Systemd service-ek telepítése..."
 cp "$SCRIPT_DIR/myio-bridge.service" /etc/systemd/system/
 
-cat > /etc/systemd/system/myio-web.service << 'EOF'
-[Unit]
-Description=myIO Bridge Web UI
-After=network-online.target
-
-[Service]
-Type=simple
-User=myio
-WorkingDirectory=/opt/myio-bridge
-ExecStart=/opt/myio-bridge/venv/bin/python web/app.py
-Restart=on-failure
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=myio-web
-# NoNewPrivileges itt NEM lehet: a UI sudo systemctl-lel indítja/állítja a bridge-et.
-ProtectSystem=full
-ProtectHome=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-EOF
+# A myio-web unit a repóban él (myio-web.service), hogy az update.sh is szinkronizálhassa.
+cp "$SCRIPT_DIR/myio-web.service" /etc/systemd/system/
 
 # --- sudoers ---
 # visudo -cf validálja a snippetet, mielőtt élesbe kerül — egy szintaktikailag

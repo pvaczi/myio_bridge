@@ -1,0 +1,21 @@
+[Unit]
+Description=myIO Bridge Web UI
+After=network-online.target
+
+[Service]
+Type=simple
+User=myio
+WorkingDirectory=/opt/myio-bridge
+ExecStart=/opt/myio-bridge/venv/bin/python web/app.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=myio-web
+# NoNewPrivileges itt NEM lehet: a UI sudo systemctl-lel indítja/állítja a bridge-et.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

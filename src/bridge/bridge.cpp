@@ -2,6 +2,7 @@
 #include <log.hpp>
 #include "async_http_client.hpp"
 #include "bridge_rules.hpp"
+#include "sd_notify.hpp"
 
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -1663,6 +1664,7 @@ net::awaitable<void> Bridge::shutdown() {
 
 net::awaitable<void> Bridge::run() {
     co_await publisher_->async_connect();
+    sdnotify::notify("STATUS=MQTT connected");
     co_await publisher_->async_subscribe(cfg_.mqtt.topic_prefix + "/#");
     co_await publisher_->async_subscribe("homeassistant/status");
     // Overrides the retained "offline" Will of a previous crash.
@@ -1729,6 +1731,7 @@ net::awaitable<void> Bridge::command_loop() {
         // Requested stop: the disconnect aborts the receive — not an error.
         if (stopping_) co_return;
         if (caught || session_expired) {
+            sdnotify::notify("STATUS=MQTT disconnected, reconnecting");
             if (session_expired) {
                 myio::log("[bridge] MQTT session expired – restoring subscriptions.");
             } else {
@@ -1764,6 +1767,7 @@ net::awaitable<void> Bridge::command_loop() {
                 co_await t.async_wait(net::use_awaitable);
                 if (stopping_) co_return;
             }
+            sdnotify::notify("STATUS=MQTT connected");
             try {
                 myio::log("[bridge] Reconnected – republishing discovery and scheduling state resync.");
                 for (auto& srv : servers_)

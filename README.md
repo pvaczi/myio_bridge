@@ -457,6 +457,16 @@ incident produced a truncated binary in production:
 5. Atomically swaps the binaries with `.bak` backups; on any install or startup failure it rolls back to the backups and restarts the old version
 6. Restarts `myio-bridge` (only if it was running before) with a two-stage health check; the `.bak` files are kept as last-known-good
 
+`update.sh` also syncs the unit files (`myio-bridge.service`, `myio-web.service`) from the repo to `/etc/systemd/system/` before the restart (`cmp` + copy + one `daemon-reload` if anything changed).
+
+### systemd integration
+
+`myio-bridge.service` is `Type=notify` with `WatchdogSec=60`, no libsystemd needed (the bridge writes to `$NOTIFY_SOCKET` itself):
+
+- `READY=1` is sent as soon as the event loop runs — not tied to the MQTT connection, so a broker that is down at boot does not fail the unit start
+- `STATUS=` shows the MQTT state in `systemctl status` (`MQTT connected` / `MQTT disconnected, reconnecting`); `STOPPING=1` on SIGTERM/SIGINT
+- `WATCHDOG=1` is pinged every 30 s from the event loop. It proves only that the loop is alive (independent of myIO polling and MQTT); if it stops, systemd kills the process and `Restart=on-failure` restarts it
+
 ### Logs
 
 ```bash
