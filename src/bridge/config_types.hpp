@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -111,6 +112,9 @@ struct MqttConfig {
 struct BridgeConfig {
     MqttConfig                mqtt;
     std::vector<ServerConfig> servers;
+    // Directory of the bridge.json the bridge was started with (set by main, not
+    // read from the file); the per-server status files go to <data_dir>/status/.
+    std::filesystem::path     data_dir;
 };
 
 } // namespace config

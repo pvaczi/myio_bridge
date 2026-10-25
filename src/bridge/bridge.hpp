@@ -75,7 +75,8 @@ public:
                  std::string                         topic_prefix,
                  std::shared_ptr<ha::IHAPublisher>   publisher,
                  std::unique_ptr<myio::IMyIOClient>  client,
-                 const net::any_io_executor&         ex);
+                 const net::any_io_executor&         ex,
+                 std::filesystem::path               status_dir = {});
 
     // Publishes HA auto-discovery messages (called once at startup)
     net::awaitable<void> publish_discovery();
@@ -204,6 +205,15 @@ private:
     // Publishes the diag JSON when due (first, forced, error state changed, or
     // >= 60 s old). A failed publish is logged and retried next cycle.
     net::awaitable<void> update_diag(bool error_state_changed);
+
+    // Status file for the Web UI: <status_dir_>/<server_id>.json, written on every
+    // diag publish and availability change, independent of MQTT. Empty
+    // status_dir_ = disabled. Never throws; a failure is logged once per message.
+    ServerDiag current_diag() const;
+    void write_status_file();
+    std::filesystem::path status_dir_;
+    std::optional<bool>   status_online_;   // nullopt = not yet determined
+    std::string           status_last_error_;
 };
 
 // ── Bridge – top-level coordinator for all servers ────────────────────────────

@@ -293,8 +293,9 @@ std::string server_diag_topic(std::string_view prefix, std::string_view server_i
     return std::format("{}/{}/diag", prefix, server_id);
 }
 
-std::string make_server_diag_state(const ServerDiag& d) {
-    json::object o{
+namespace {
+json::object server_diag_object(const ServerDiag& d) {
+    return json::object{
         {"last_poll_ok",       d.last_poll_ok ? json::value(format_iso_utc(*d.last_poll_ok))
                                               : json::value(nullptr)},
         {"poll_latency_ms",    d.poll_latency_ms ? json::value(*d.poll_latency_ms)
@@ -305,6 +306,18 @@ std::string make_server_diag_state(const ServerDiag& d) {
         {"firmware",           d.firmware},
         {"info_error",         d.info_error},
     };
+}
+} // namespace
+
+std::string make_server_diag_state(const ServerDiag& d) {
+    return json::serialize(server_diag_object(d));
+}
+
+std::string make_server_status_state(const ServerDiag& d, std::optional<bool> online,
+                                     std::chrono::system_clock::time_point now) {
+    auto o = server_diag_object(d);
+    o["online"]     = online ? json::value(*online) : json::value(nullptr);
+    o["written_at"] = format_iso_utc(now);
     return json::serialize(o);
 }
 

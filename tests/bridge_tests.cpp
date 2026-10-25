@@ -480,6 +480,20 @@ void test_diagnostics() {
 
     CHECK(bridge::server_diag_topic("myio", "lighting") == "myio/lighting/diag");
 
+    // Status file content: diag fields + online (null/true/false) + written_at.
+    const auto now = sys_days{year{2026} / 10 / 14} + hours{8};
+    auto st = json::parse(bridge::make_server_status_state(d, std::nullopt, now)).as_object();
+    CHECK(st.at("online").is_null());
+    CHECK(st.at("written_at").as_string() == "2026-10-14T08:00:00Z");
+    CHECK(st.at("last_poll_ok").as_string() == "2026-01-02T03:00:00Z");
+    CHECK(st.at("consecutive_errors").as_int64() == 2);
+    CHECK(st.at("firmware").as_string() == "3.9");
+    st = json::parse(bridge::make_server_status_state(d, true, now)).as_object();
+    CHECK(st.at("online").as_bool() == true);
+    st = json::parse(bridge::make_server_status_state(bridge::ServerDiag{}, false, now)).as_object();
+    CHECK(st.at("online").as_bool() == false);
+    CHECK(st.at("last_poll_ok").is_null());
+
     bridge::DiscoveryContext ctx;
     ctx.prefix         = "myio";
     ctx.server_id      = "lighting";

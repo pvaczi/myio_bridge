@@ -93,6 +93,16 @@
     #ve-filter { font-size: .82rem; }
     #bridge-dirty { font-size: .75rem; color: #ffc107; display: none; }
 
+    /* Server status tiles: label/value grid, one column on narrow screens */
+    .srv-tile { border: 1px solid #dee2e6; border-radius: .375rem; padding: .5rem .65rem; margin-bottom: .4rem; }
+    .srv-tile:last-child { margin-bottom: 0; }
+    .srv-head { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; margin-bottom: .3rem; }
+    .srv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .15rem .75rem; font-size: .82rem; }
+    .srv-grid .srv-k { color: #6c757d; font-size: .72rem; display: block; line-height: 1.2; }
+    .srv-grid .srv-wide { grid-column: 1 / -1; }
+    .srv-grid .srv-v { overflow-wrap: anywhere; }
+    @media (max-width: 575.98px) { .srv-grid { grid-template-columns: 1fr; } }
+
     /* Own confirm dialog (Bootstrap modal markup, no Bootstrap JS on the page) */
     #confirm-modal { display: none; z-index: 2000; background: rgba(0,0,0,.5); }
     #confirm-modal.open { display: block; }
@@ -140,6 +150,14 @@
         <button id="btn-start" class="btn btn-sm btn-success me-2" onclick="bridgeAction('start')">Start</button>
         <button id="btn-stop"  class="btn btn-sm btn-danger"       onclick="confirmStop()">Stop</button>
         <div id="bridge-error" class="text-danger small mt-2" style="display:none;"></div>
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-body">
+        <h6 class="card-title">Szerverek</h6>
+        <div id="servers-error" class="text-danger small mb-2" style="display:none;"></div>
+        <div id="servers-list"><span class="text-muted small">Betöltés…</span></div>
       </div>
     </div>
 
@@ -979,9 +997,110 @@ async function fetchVersion() {
   } catch { el.textContent = '?'; }
 }
 
+// --- Server status card (data: files written by the bridge, via /api/servers/status) ---
+const SERVER_STALE_SEC = 180;   // status file older than this: the bridge probably stopped
+let serversTimer = null;
+
+function relAgo(sec) {
+  if (sec < 0) sec = 0;
+  if (sec < 60) return sec + ' mp-e';
+  if (sec < 3600) return Math.floor(sec / 60) + ' perce';
+  if (sec < 86400) return Math.floor(sec / 3600) + ' órája';
+  return Math.floor(sec / 86400) + ' napja';
+}
+
+function srvBadge(text, cls) {
+  const b = document.createElement('span');
+  b.className = 'badge ' + cls;
+  b.textContent = text;
+  return b;
+}
+
+function srvField(label, value, wide) {
+  const d = document.createElement('div');
+  if (wide) d.className = 'srv-wide';
+  const k = document.createElement('span');
+  k.className = 'srv-k';
+  k.textContent = label;
+  const v = document.createElement('span');
+  v.className = 'srv-v';
+  v.textContent = value;
+  d.append(k, v);
+  return d;
+}
+
+function renderServers(d) {
+  const list = document.getElementById('servers-list');
+  list.replaceChildren();
+  if (!d.servers.length) {
+    list.innerHTML = '<span class="text-muted small">Nincs szerver.</span>';
+    return;
+  }
+  const now = Date.parse(d.now);
+  for (const s of d.servers) {
+    const tile = document.createElement('div');
+    tile.className = 'srv-tile';
+    const head = document.createElement('div');
+    head.className = 'srv-head';
+    const name = document.createElement('strong');
+    name.textContent = s.server_id;
+    head.append(name);
+    tile.append(head);
+    if (s.missing || s.error) {
+      head.append(srvBadge('ismeretlen', 'bg-secondary'));
+      const m = document.createElement('div');
+      m.className = 'small ' + (s.error ? 'text-danger' : 'text-muted');
+      m.textContent = s.error ? 'Hibás státuszfájl: ' + s.error : 'Még nincs státuszfájl (a bridge nem futott).';
+      tile.append(m);
+      list.append(tile);
+      continue;
+    }
+    if (s.online === true) head.append(srvBadge('online', 'bg-success'));
+    else if (s.online === false) head.append(srvBadge('offline', 'bg-danger'));
+    else head.append(srvBadge('ismeretlen', 'bg-secondary'));
+    if (s.age_sec > SERVER_STALE_SEC)
+      head.append(srvBadge('elavult', 'bg-warning text-dark'));
+    const lastPoll = s.last_poll_ok ? relAgo(Math.round((now - Date.parse(s.last_poll_ok)) / 1000)) : '–';
+    const grid = document.createElement('div');
+    grid.className = 'srv-grid';
+    grid.append(
+      srvField('Utolsó poll', lastPoll),
+      srvField('Késleltetés', s.poll_latency_ms == null ? '–' : s.poll_latency_ms + ' ms'),
+      srvField('Hibák', s.consecutive_errors + ' egymás után / ' + s.total_errors + ' összesen'),
+      srvField('Firmware', s.firmware || 'ismeretlen'),
+      srvField('Utolsó hiba', s.last_error || 'nincs', true));
+    if (s.info_error) grid.append(srvField('Info hiba', s.info_error, true));
+    tile.append(grid);
+    list.append(tile);
+  }
+}
+
+async function fetchServers() {
+  const err = document.getElementById('servers-error');
+  const d = await api('/api/servers/status');
+  if (!d.servers) {
+    err.textContent = d.error || 'Nem sikerült lekérni a szerverek állapotát';
+    err.style.display = '';
+    return;
+  }
+  err.style.display = 'none';
+  renderServers(d);
+}
+
+// Refresh only while the page is visible; catch up immediately when it becomes visible again.
+function updateServersTimer() {
+  clearInterval(serversTimer); serversTimer = null;
+  if (document.visibilityState === 'visible') {
+    fetchServers();
+    serversTimer = setInterval(fetchServers, 10000);
+  }
+}
+document.addEventListener('visibilitychange', updateServersTimer);
+
 fetchVersion();
 fetchStatus();
 setInterval(fetchStatus, 5000);
+updateServersTimer();
 </script>
 </body>
 </html>

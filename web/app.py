@@ -94,6 +94,49 @@ def bridge_status():
     return jsonify({"status": result.stdout.strip()})
 
 
+STATUS_DIR = os.path.join(DATA_DIR, "status")
+
+
+@app.route("/api/servers/status")
+def servers_status():
+    """Per-server live status from the files the bridge writes to
+    <data dir>/status/<id>.json. Order follows bridge.json, else file names.
+    A missing/unreadable file becomes an entry, never an HTTP error."""
+    now = time.time()
+    ids = []
+    try:
+        with open(BRIDGE_JSON) as f:
+            for s in json.load(f).get("servers", []):
+                sid = s.get("id") if isinstance(s, dict) else None
+                if isinstance(sid, str) and sid and sid not in ids:
+                    ids.append(sid)
+    except (OSError, ValueError, AttributeError):
+        ids = []
+    if not ids:
+        try:
+            ids = sorted(n[:-5] for n in os.listdir(STATUS_DIR) if n.endswith(".json"))
+        except OSError:
+            ids = []
+    servers = []
+    for sid in ids:
+        path = os.path.join(STATUS_DIR, sid + ".json")
+        entry = {"server_id": sid}
+        try:
+            mtime = os.stat(path).st_mtime
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("not a JSON object")
+            entry = {**data, "server_id": sid, "age_sec": max(0, int(now - mtime))}
+        except FileNotFoundError:
+            entry["missing"] = True
+        except (OSError, ValueError) as e:
+            entry["error"] = str(e)[:120]
+        servers.append(entry)
+    return jsonify({"servers": servers,
+                    "now": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))})
+
+
 @app.route("/api/bridge/start", methods=["POST"])
 def bridge_start():
     result = subprocess.run(

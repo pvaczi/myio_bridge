@@ -473,6 +473,7 @@ Access is protected by HTTP Basic auth. Credentials live in `/opt/myio-bridge/da
 Features:
 - **Bridge mode** (default): start/stop the bridge, edit `bridge.json`, view the live log
 - **Discovery mode**: run discovery (with confirmation — merges into `bridge.json`, see the discovery re-run rules), edit `discovery_input.json`; only available when the bridge is stopped
+- **Szerverek kártya**: szerverenként élő állapot (online/offline, utolsó poll, késleltetés, hibaszámok, firmware), 10 másodpercenként frissül, amíg az oldal látható. A bridge a `data/status/<server_id>.json` fájlokba írja (a `bridge.json` mappájába, atomikusan, MQTT-től függetlenül); az `elavult` jelző azt jelzi, hogy a fájl 180 s-nál régebbi (a bridge valószínűleg áll).
 - **Live log**: last 200 lines of the bridge's systemd journal, with manual refresh or auto-refresh every 3 seconds
 - **`bridge.json` editor**: opens in a resizable, draggable floating popup (760×560 px). Toggle between **Raw** (plain textarea) and **Visual** modes via the button in the popup header.
   - **Save** validates with `bridge --check-config` and refuses an invalid file; **Mentés és újraindítás** also restarts the bridge (at most once per 10 s — every restart re-polls each myIO server).

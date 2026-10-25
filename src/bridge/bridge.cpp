@@ -14,7 +14,9 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <limits>
 #include <random>
 #include <ranges>
@@ -382,12 +384,14 @@ ServerBridge::ServerBridge(config::ServerConfig               cfg,
                             std::string                        topic_prefix,
                             std::shared_ptr<ha::IHAPublisher>  publisher,
                             std::unique_ptr<myio::IMyIOClient> client,
-                            const net::any_io_executor&        ex)
+                            const net::any_io_executor&        ex,
+                            std::filesystem::path              status_dir)
     : cfg_(std::move(cfg))
     , topic_prefix_(std::move(topic_prefix))
     , publisher_(std::move(publisher))
     , client_(std::move(client))
     , cmd_chan_(ex, 1024)
+    , status_dir_(std::move(status_dir))
 {}
 
 // ── Discovery ─────────────────────────────────────────────────────────────────
@@ -723,6 +727,11 @@ void ServerBridge::schedule_resync() {
 // ── Availability ──────────────────────────────────────────────────────────────
 
 net::awaitable<void> ServerBridge::update_availability(bool online) {
+    // The status file follows the real state, independent of the MQTT publish.
+    if (status_online_ != online) {
+        status_online_ = online;
+        write_status_file();
+    }
     if (published_available_ == online) co_return;
     try {
         co_await publisher_->async_publish(
@@ -748,14 +757,8 @@ net::awaitable<void> ServerBridge::update_diag(bool error_state_changed) {
                      now - *diag_published_at_ >= kDiagRefresh;
     if (!due) co_return;
 
-    ServerDiag d;
-    d.last_poll_ok       = last_poll_ok_;
-    d.poll_latency_ms    = last_poll_latency_ms_;
-    d.consecutive_errors = consecutive_errors_;
-    d.total_errors       = total_errors_;
-    d.last_error         = last_error_;
-    d.firmware           = firmware_version_;
-    d.info_error         = last_info_error_;
+    const ServerDiag d = current_diag();
+    write_status_file();   // before the publish: a broker outage must not stop the file
     try {
         co_await publisher_->async_publish(server_diag_topic(topic_prefix_, cfg_.server_id),
                                            make_server_diag_state(d), true);
@@ -766,6 +769,44 @@ net::awaitable<void> ServerBridge::update_diag(bool error_state_changed) {
         // Forced retry after the next poll (the trigger may not recur).
         diag_force_ = true;
         myio::log(stderr, "[{}] Diag publish failed: {}", cfg_.server_id, myio::short_what(ex));
+    }
+}
+
+ServerDiag ServerBridge::current_diag() const {
+    ServerDiag d;
+    d.last_poll_ok       = last_poll_ok_;
+    d.poll_latency_ms    = last_poll_latency_ms_;
+    d.consecutive_errors = consecutive_errors_;
+    d.total_errors       = total_errors_;
+    d.last_error         = last_error_;
+    d.firmware           = firmware_version_;
+    d.info_error         = last_info_error_;
+    return d;
+}
+
+void ServerBridge::write_status_file() {
+    if (status_dir_.empty()) return;
+    try {
+        namespace fs = std::filesystem;
+        fs::create_directories(status_dir_);
+        const fs::path file = status_dir_ / (cfg_.server_id + ".json");
+        fs::path tmp = file;
+        tmp += ".tmp";
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            out << make_server_status_state(current_diag(), status_online_,
+                                            std::chrono::system_clock::now());
+            out.close();
+            if (!out) throw std::runtime_error("cannot write " + tmp.string());
+        }
+        fs::rename(tmp, file);   // atomic replace: the Web UI never sees a partial file
+        status_last_error_.clear();
+    } catch (const std::exception& ex) {
+        const std::string msg = myio::short_what(ex);
+        if (msg != status_last_error_) {   // once per distinct message
+            status_last_error_ = msg;
+            myio::log(stderr, "[{}] Status file write failed: {}", cfg_.server_id, msg);
+        }
     }
 }
 
@@ -1492,7 +1533,8 @@ Bridge::Bridge(config::BridgeConfig              cfg,
             cfg_.mqtt.topic_prefix,
             publisher_,
             std::make_unique<myio::AsyncHttpClient>(hcfg, ioc_.get_executor()),
-            ioc_.get_executor()));
+            ioc_.get_executor(),
+            cfg_.data_dir.empty() ? std::filesystem::path{} : cfg_.data_dir / "status"));
     }
 }
 

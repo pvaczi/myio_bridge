@@ -9,6 +9,7 @@
 #include <boost/asio/steady_timer.hpp>
 
 #include <chrono>
+#include <filesystem>
 #include <memory>
 #include <print>
 #include <stdexcept>
@@ -51,6 +52,9 @@ int main(int argc, char* argv[]) {
         myio::log(stderr, "[bridge] Config error: {}", ex.what());
         return 1;
     }
+
+    // Status files go next to the config (bridge.json's directory; "." if bare name).
+    cfg.data_dir = std::filesystem::absolute(std::filesystem::path(config_path)).parent_path();
 
     myio::log("[bridge] {} server(s) configured, MQTT: {}:{}",
               cfg.servers.size(), cfg.mqtt.host, cfg.mqtt.port);

@@ -174,6 +174,10 @@ struct ServerDiag {
 // "<prefix>/<server_id>/diag" (retained JSON state of the server diagnostics)
 std::string server_diag_topic(std::string_view prefix, std::string_view server_id);
 std::string make_server_diag_state(const ServerDiag& d);
+// Content of <data dir>/status/<server_id>.json (read by the Web UI): the diag
+// fields plus "online" (null = not yet determined) and "written_at".
+std::string make_server_status_state(const ServerDiag& d, std::optional<bool> online,
+                                     std::chrono::system_clock::time_point now);
 
 enum class DiagEntity { LastPoll, PollLatency, ConsecutiveErrors, TotalErrors,
                         LastError, Firmware, InfoError };
