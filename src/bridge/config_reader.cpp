@@ -138,6 +138,12 @@ static ServerConfig parse_server(const json::object& o) {
     sc.sensor_log_threshold  = double_or(o, "sensor_log_threshold", 0.1);
     sc.log_startup_sync      = bool_or  (o, "log_startup_sync",     false);
     sc.coalesce_window_ms    = int_or   (o, "coalesce_window_ms",   5);
+    if (const auto* v = o.if_contains("log_debug")) {
+        if (!v->is_bool())
+            throw std::runtime_error(std::format(
+                "Server '{}': 'log_debug' must be true or false", sc.server_id));
+        sc.log_debug = v->get_bool();
+    }
 
     if (sc.server_id.empty() || sc.host.empty())
         throw std::runtime_error("Server entry requires 'id' and 'host'");

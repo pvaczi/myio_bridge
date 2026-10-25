@@ -437,6 +437,7 @@ function renderServerSection(srv) {
   const pass = srv.password ?? 'admin', interval = srv.poll_interval_sec ?? 2;
   const logThreshold = srv.sensor_log_threshold ?? 0.1;
   const logStartup   = srv.log_startup_sync === true;
+  const logDebug     = srv.log_debug === true;
   const coalesce     = srv.coalesce_window_ms ?? 5;
   return `<div class="ve-section ve-server">
   <div class="ve-section-hd" onclick="veToggleSection(this)">
@@ -454,6 +455,7 @@ function renderServerSection(srv) {
       <div class="ve-field"><label>Int. (s)</label><input type="number" name="srv-interval" value="${interval}" min="1" style="width:60px"></div>
       <div class="ve-field"><label>Log küszöb</label><input type="number" name="srv-log-threshold" value="${logThreshold}" step="0.05" min="0" style="width:65px" title="Minimum szenzorváltozás a loghoz (°C/egység); 0 = minden publish logol"></div>
       <div class="ve-field"><label>Startup log</label><input type="checkbox" name="srv-log-startup"${logStartup ? ' checked' : ''} title="Startup/resync állapotok logolása" style="width:1rem;height:1rem;margin-top:.3rem;cursor:pointer"></div>
+      <div class="ve-field"><label>Debug log</label><input type="checkbox" name="srv-log-debug"${logDebug ? ' checked' : ''} title="[coalesce] és [latency] mérési sorok a logban" style="width:1rem;height:1rem;margin-top:.3rem;cursor:pointer"></div>
       <div class="ve-field"><label>Coalesce (ms)</label><input type="number" name="srv-coalesce" value="${coalesce}" min="0" style="width:65px" title="Várakozás az 1. parancs után, hogy a testvér-parancsok egy POST-ba kerüljenek (ms); 0 = nincs batchelés"></div>
     </div>
     ${renderSubsection('pca',    'PCA kimenetek', srv.pca     ?? [], renderOutputRow.bind(null,'pca'))}
@@ -532,6 +534,7 @@ function collectBridgeEditorData() {
       poll_interval_sec:    parseInt(body.querySelector('[name=srv-interval]').value) || 2,
       sensor_log_threshold: isNaN(logThresholdVal) ? 0.1 : logThresholdVal,
       log_startup_sync:     body.querySelector('[name=srv-log-startup]').checked,
+      log_debug:            body.querySelector('[name=srv-log-debug]').checked,
       coalesce_window_ms:   isNaN(coalesceVal) ? 5 : coalesceVal
     };
 

@@ -86,6 +86,7 @@ struct ServerConfig {
     bool                  log_startup_sync     = false; // log entity states during startup/resync
     int                   coalesce_window_ms   = 5;     // wait after 1st command to batch siblings
                                                         // into one POST; 0 = no batching
+    bool                  log_debug            = false; // [coalesce]/[latency] measurement lines
 
     // ALL entries are loaded (enabled and disabled alike) so the bridge
     // can send MQTT undiscovery messages for disabled entries.

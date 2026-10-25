@@ -1390,13 +1390,14 @@ net::awaitable<void> ServerBridge::command_worker() {
                 const auto gap_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                     cmd_arrival_times_.front() - t0).count();
                 cmd_arrival_times_.pop_front();
-                myio::log("[{}] [coalesce] sibling +{}ms after batch start", cfg_.server_id, gap_ms);
+                if (cfg_.log_debug)
+                    myio::log("[{}] [coalesce] sibling +{}ms after batch start", cfg_.server_id, gap_ms);
             }
 
             batch.emplace_back(std::move(t2), std::move(p2));
         }
 
-        if (batch.size() > 1)
+        if (cfg_.log_debug && batch.size() > 1)
             myio::log("[{}] [coalesce] batch closed: {} commands within {}ms window",
                       cfg_.server_id, batch.size(), coalesce_window.count());
 
@@ -1404,7 +1405,8 @@ net::awaitable<void> ServerBridge::command_worker() {
             co_await process_command_batch(batch);
             const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - t0).count();
-            myio::log("[{}] [latency] HA→myIO {}ms ({} cmd)", cfg_.server_id, total_ms, batch.size());
+            if (cfg_.log_debug)
+                myio::log("[{}] [latency] HA→myIO {}ms ({} cmd)", cfg_.server_id, total_ms, batch.size());
         } catch (const std::exception& e) {
             const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - t0).count();

@@ -87,6 +87,12 @@ void test_coalesce_window() {
     CHECK(parse_error(make_config("", R"(, "coalesce_window_ms": 0)")).empty());
 }
 
+void test_log_debug() {
+    CHECK(!config::parse_bridge_config(make_config()).servers[0].log_debug);
+    CHECK(config::parse_bridge_config(make_config("", R"(, "log_debug": true)")).servers[0].log_debug);
+    CHECK(rejected_with(make_config("", R"(, "log_debug": "yes")"), "log_debug"));
+}
+
 void test_required_sections() {
     CHECK(rejected_with(R"({"mqtt":{"host":"b"},"servers":[]})", "servers"));
     CHECK(rejected_with(R"({"mqtt":{"host":"b"}})", "servers"));
@@ -546,6 +552,7 @@ int main() {
     test_valid_config();
     test_poll_interval();
     test_coalesce_window();
+    test_log_debug();
     test_required_sections();
     test_topic_prefix();
     test_server_id_and_ports();
