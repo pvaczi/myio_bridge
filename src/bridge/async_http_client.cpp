@@ -179,18 +179,23 @@ net::awaitable<void> AsyncHttpClient::do_post(std::string_view target,
 
     // A rejected command (401, 5xx…) must not be reported as success, else the
     // caller publishes an optimistic state the device never took.
-    // Only an explicit status line is judged: the POST response format is not
-    // verified on the device (some myIO answers are HTTP/0.9 without a status
-    // line), so an empty or status-less response keeps the old "accepted"
-    // behaviour instead of failing every command / re-sending it.
+    // All three devices answer a POST with "HTTP/1.1 200 OK" (measured
+    // 2026.10.15), so an empty or status-less response is a failed exchange
+    // (typically a dropped W5100 connection): a plain error, hence retried.
     const auto status = bridge::parse_http_status(raw);
-    if (!status) co_return;
-    if (*status == 401)
+    switch (bridge::classify_post_status(status)) {
+    case bridge::PostVerdict::Accepted:
+        co_return;
+    case bridge::PostVerdict::Unauthorized:
         throw HttpStatusError(std::format(
             "[{}] POST: HTTP 401 – wrong username or password", cfg_.host));
-    // 3xx is accepted: an embedded form handler may answer with a redirect.
-    if (*status < 200 || *status > 399)
+    case bridge::PostVerdict::Rejected:
         throw HttpStatusError(std::format("[{}] POST rejected: HTTP {}", cfg_.host, *status));
+    case bridge::PostVerdict::NoStatus:
+        break;
+    }
+    throw std::runtime_error(std::format("[{}] POST: {} response, no HTTP status line",
+                                         cfg_.host, raw.empty() ? "empty" : "malformed"));
 }
 
 // ── Public interface ──────────────────────────────────────────────────────────

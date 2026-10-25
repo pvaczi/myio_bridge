@@ -494,7 +494,7 @@ Payloads are validated strictly (case-insensitive, whitespace trimmed); anything
 | number | integer 0–100 (%), sent as raw 0–255 |
 | cover | `OPEN` / `CLOSE` / `STOP` |
 
-Also dropped: commands whose topic component does not match the output's configured type, read-only outputs, and cover endpoints. A POST answered with HTTP 401, 4xx or 5xx is an error (3xx is accepted); the optimistic state is then **not** published. A response without a status line is treated as accepted.
+Also dropped: commands whose topic component does not match the output's configured type, read-only outputs, and cover endpoints. A POST answered with HTTP 401, 4xx or 5xx is an error (3xx is accepted); the optimistic state is then **not** published. An empty response or one without a status line is a failed exchange and is retried like a connection error.
 
 ### POST commands
 

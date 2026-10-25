@@ -66,6 +66,13 @@ std::optional<CoverCommand> parse_cover_command(std::string_view payload);
 // nullopt if there is no well-formed status line.
 std::optional<int> parse_http_status(std::string_view raw);
 
+enum class PostVerdict { Accepted, Unauthorized, Rejected, NoStatus };
+
+// Verdict on a myIO POST response from its parse_http_status() result.
+// 2xx/3xx → Accepted (an embedded form handler may answer with a redirect);
+// NoStatus (empty or status-less response) is not a definitive answer.
+PostVerdict classify_post_status(std::optional<int> status);
+
 // ── Availability ──────────────────────────────────────────────────────────────
 // Retained "online"/"offline" topics. The bridge topic is also the MQTT Will
 // (LWT); "bridge" is therefore a reserved server id (config_reader rejects it).

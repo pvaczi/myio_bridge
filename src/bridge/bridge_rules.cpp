@@ -133,6 +133,13 @@ std::optional<int> parse_http_status(std::string_view raw) {
     return code;
 }
 
+PostVerdict classify_post_status(std::optional<int> status) {
+    if (!status) return PostVerdict::NoStatus;
+    if (*status == 401) return PostVerdict::Unauthorized;
+    if (*status < 200 || *status > 399) return PostVerdict::Rejected;
+    return PostVerdict::Accepted;
+}
+
 std::string bridge_availability_topic(std::string_view prefix) {
     return std::format("{}/bridge/availability", prefix);
 }

@@ -289,6 +289,23 @@ void test_http_status_parsing() {
     CHECK(!parse_http_status("garbage\r\nContent-Length: 200\r\n"));
 }
 
+void test_post_verdict() {
+    using bridge::classify_post_status;
+    using bridge::PostVerdict;
+    CHECK(classify_post_status(200) == PostVerdict::Accepted);
+    CHECK(classify_post_status(204) == PostVerdict::Accepted);
+    CHECK(classify_post_status(302) == PostVerdict::Accepted);
+    CHECK(classify_post_status(401) == PostVerdict::Unauthorized);
+    CHECK(classify_post_status(101) == PostVerdict::Rejected);
+    CHECK(classify_post_status(404) == PostVerdict::Rejected);
+    CHECK(classify_post_status(503) == PostVerdict::Rejected);
+    CHECK(classify_post_status(std::nullopt) == PostVerdict::NoStatus);
+    // The bare-LF device answer (measured) still counts as accepted.
+    CHECK(classify_post_status(bridge::parse_http_status(
+              "HTTP/1.1 200 OK\nContent-Type: text/html\n\n<html>")) == PostVerdict::Accepted);
+    CHECK(classify_post_status(bridge::parse_http_status("")) == PostVerdict::NoStatus);
+}
+
 void test_reserved_server_id() {
     CHECK(rejected_with(R"({"servers":[{"id":"bridge","host":"h"}]})", "reserved"));
 }
@@ -506,6 +523,7 @@ int main() {
     test_numeric_parsing();
     test_percent_raw_conversion();
     test_http_status_parsing();
+    test_post_verdict();
     test_reserved_server_id();
     test_availability();
     test_sensor_class();
