@@ -91,6 +91,25 @@
     .ve-empty { font-size: .78rem; color: #adb5bd; padding: .15rem 0; }
     #ve-add-server-row { margin-top: .35rem; }
     #ve-filter { font-size: .82rem; }
+    #bridge-dirty { font-size: .75rem; color: #ffc107; display: none; }
+
+    /* Own confirm dialog (Bootstrap modal markup, no Bootstrap JS on the page) */
+    #confirm-modal { display: none; z-index: 2000; background: rgba(0,0,0,.5); }
+    #confirm-modal.open { display: block; }
+
+    /* Narrow viewport: the editor popup becomes a full-screen panel. !important beats the
+       inline left/top/width/height written by the drag and the resize handle. */
+    @media (max-width: 575.98px) {
+      #bridge-config-popup {
+        left: 0 !important; top: 0 !important; right: 0; bottom: 0;
+        width: 100% !important; height: 100% !important;
+        min-width: 0; border: none; border-radius: 0; resize: none;
+      }
+      #bridge-popup-handle { cursor: default; border-radius: 0; }
+      #bridge-popup-footer { flex-wrap: wrap; gap: .4rem; }
+      #bridge-popup-footer .me-2, #bridge-popup-footer .me-3 { margin-right: 0 !important; }
+      #bridge-popup-footer .save-fb { flex: 1 0 100%; margin-left: 0; }
+    }
   </style>
 </head>
 <body>
@@ -118,8 +137,8 @@
           <span id="status-dot" class="status-dot status-unknown"></span>
           <span id="status-text">–</span>
         </p>
-        <button class="btn btn-sm btn-success me-2" onclick="bridgeAction('start')">Start</button>
-        <button class="btn btn-sm btn-danger"       onclick="bridgeAction('stop')">Stop</button>
+        <button id="btn-start" class="btn btn-sm btn-success me-2" onclick="bridgeAction('start')">Start</button>
+        <button id="btn-stop"  class="btn btn-sm btn-danger"       onclick="confirmStop()">Stop</button>
         <div id="bridge-error" class="text-danger small mt-2" style="display:none;"></div>
       </div>
     </div>
@@ -174,7 +193,7 @@
 <!-- bridge.json popup szerkesztő -->
 <div id="bridge-config-popup">
   <div id="bridge-popup-handle">
-    <span class="popup-title">bridge.json</span>
+    <span class="popup-title">bridge.json <span id="bridge-dirty">● nem mentett</span></span>
     <div class="btn-group btn-group-sm" role="group">
       <button class="btn btn-outline-light active" id="btn-editor-raw"    onclick="switchBridgeEditorMode('raw')">Raw</button>
       <button class="btn btn-outline-light"        id="btn-editor-visual" onclick="switchBridgeEditorMode('visual')">Vizuális</button>
@@ -190,10 +209,26 @@
     <div id="bridge-config-visual" style="display:none;"></div>
     <div id="bridge-popup-footer">
       <button class="btn btn-sm btn-primary me-2" onclick="saveBridgeConfig(false)">Save</button>
-      <button id="btn-save-restart" class="btn btn-sm btn-warning me-3" onclick="saveBridgeConfig(true)">Mentés és újraindítás</button>
+      <button id="btn-save-restart" class="btn btn-sm btn-warning me-3" onclick="saveBridgeConfig(true)">
+        <span id="save-restart-spinner" class="spinner-border spinner-border-sm me-1" style="display:none;"></span>
+        <span id="save-restart-label">Mentés és újraindítás</span>
+      </button>
       <select id="bridge-backups" class="form-select form-select-sm me-2" style="width:auto;" title="Korábbi bridge.json-mentések"></select>
       <button class="btn btn-sm btn-outline-secondary" onclick="restoreBridgeBackup()">Visszaállítás</button>
       <span id="bridge-save-fb" class="save-fb"></span>
+    </div>
+  </div>
+</div>
+
+<!-- megerősítő ablak -->
+<div id="confirm-modal" class="modal" tabindex="-1" role="dialog" aria-modal="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-body" id="confirm-text"></div>
+      <div class="modal-footer">
+        <button id="confirm-cancel" class="btn btn-sm btn-outline-secondary" onclick="confirmAnswer(false)">Mégse</button>
+        <button id="confirm-ok" class="btn btn-sm btn-danger" onclick="confirmAnswer(true)">OK</button>
+      </div>
     </div>
   </div>
 </div>
@@ -204,13 +239,71 @@ let bridgeActive = false;
 let logTimer = null;
 let bridgeConfigLoaded = false;
 let bridgeEditorMode = 'raw';
+let bridgeDirty = false;
+
+// --- fetch helper: network/parse failure becomes {ok:false, error} instead of a silent throw ---
+async function api(url, opts) {
+  try {
+    const r = await fetch(url, opts);
+    return await r.json();
+  } catch {
+    return { ok: false, error: 'Nem érhető el a szerver' };
+  }
+}
+
+// --- Confirm dialog (resolves true on OK) ---
+let confirmResolve = null;
+
+function confirmDialog(text, okLabel, okClass) {
+  if (confirmResolve) confirmAnswer(false);
+  document.getElementById('confirm-text').textContent = text;
+  const ok = document.getElementById('confirm-ok');
+  ok.textContent = okLabel || 'OK';
+  ok.className = 'btn btn-sm ' + (okClass || 'btn-danger');
+  document.getElementById('confirm-modal').classList.add('open');
+  document.getElementById('confirm-cancel').focus();
+  return new Promise(res => { confirmResolve = res; });
+}
+
+function confirmAnswer(yes) {
+  document.getElementById('confirm-modal').classList.remove('open');
+  const res = confirmResolve;
+  confirmResolve = null;
+  if (res) res(yes);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && confirmResolve) confirmAnswer(false);
+});
+
+// --- Unsaved-changes tracking of the bridge.json editor ---
+function setBridgeDirty(v) {
+  bridgeDirty = v;
+  document.getElementById('bridge-dirty').style.display = v ? '' : 'none';
+}
+
+window.addEventListener('beforeunload', e => {
+  if (!bridgeDirty) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 // --- Popup drag ---
 let dragState = null;
 
 document.addEventListener('DOMContentLoaded', () => {
+  // The visual editor's add/delete buttons change the data without an input event.
+  const body = document.getElementById('bridge-popup-body');
+  const edited = e => !e.target.closest('#ve-filter-row, #bridge-backups');
+  body.addEventListener('input',  e => { if (edited(e)) setBridgeDirty(true); });
+  body.addEventListener('change', e => { if (edited(e)) setBridgeDirty(true); });
+  document.getElementById('bridge-config-visual').addEventListener('click', e => {
+    if (e.target.closest('button')) setBridgeDirty(true);
+  });
+
   document.getElementById('bridge-popup-handle').addEventListener('mousedown', e => {
     if (e.target.closest('button')) return;
+    if (window.matchMedia('(max-width: 575.98px)').matches) return;
     const popup = document.getElementById('bridge-config-popup');
     const rect = popup.getBoundingClientRect();
     dragState = { startX: e.clientX, startY: e.clientY, left: rect.left, top: rect.top };
@@ -233,6 +326,8 @@ async function fetchStatus() {
     const dot = document.getElementById('status-dot');
     dot.className = 'status-dot ' + (bridgeActive ? 'status-active' : 'status-inactive');
     document.getElementById('status-text').textContent = d.status;
+    document.getElementById('btn-start').disabled = bridgeActive;
+    document.getElementById('btn-stop').disabled  = !bridgeActive;
     const discTab = document.getElementById('tab-discovery');
     discTab.disabled = bridgeActive;
     discTab.title = bridgeActive ? 'A bridge futása közben nem lehet Discovery módba váltani.' : '';
@@ -240,6 +335,8 @@ async function fetchStatus() {
   } catch {
     document.getElementById('status-dot').className = 'status-dot status-unknown';
     document.getElementById('status-text').textContent = 'ismeretlen';
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-stop').disabled  = false;
   }
 }
 
@@ -257,10 +354,15 @@ function switchMode(newMode) {
 async function bridgeAction(action) {
   const errEl = document.getElementById('bridge-error');
   errEl.style.display = 'none';
-  const r = await fetch('/api/bridge/' + action, { method: 'POST' });
-  const d = await r.json();
+  const d = await api('/api/bridge/' + action, { method: 'POST' });
   if (!d.ok) { errEl.textContent = d.error || 'Hiba'; errEl.style.display = ''; }
   await fetchStatus();
+}
+
+async function confirmStop() {
+  if (await confirmDialog('Leállítod a bridge-et? A házvezérlés az újraindításig nem működik.', 'Leállítás')) {
+    bridgeAction('stop');
+  }
 }
 
 function openBridgeConfigPopup() {
@@ -273,7 +375,13 @@ function openBridgeConfigPopup() {
   if (!bridgeConfigLoaded) { bridgeConfigLoaded = true; loadBridgeConfig(); }
 }
 
-function closeBridgeConfigPopup() {
+async function closeBridgeConfigPopup() {
+  if (bridgeDirty) {
+    if (!await confirmDialog('Vannak nem mentett változtatásaid. Bezárod a szerkesztőt, és elveted őket?', 'Elvetés')) return;
+    // Reload so the dropped edits do not reappear on the next open.
+    await loadBridgeConfig();
+    setBridgeDirty(false);
+  }
   document.getElementById('bridge-config-popup').classList.remove('open');
 }
 
@@ -720,14 +828,14 @@ function switchBridgeEditorMode(newMode) {
 }
 
 async function loadBridgeConfig() {
-  const r = await fetch('/api/config/bridge');
-  const d = await r.json();
+  const d = await api('/api/config/bridge');
   const content = d.ok ? d.content : ('Hiba: ' + d.error);
   document.getElementById('bridge-config').value = content;
   document.getElementById('bridge-save-fb').textContent = '';
   if (bridgeEditorMode === 'visual' && d.ok) {
     try { renderBridgeVisualEditor(JSON.parse(content)); } catch {}
   }
+  setBridgeDirty(false);
   loadBridgeBackups();
 }
 
@@ -739,8 +847,7 @@ function backupLabel(name) {
 
 async function loadBridgeBackups() {
   const sel = document.getElementById('bridge-backups');
-  const r = await fetch('/api/config/bridge/backups');
-  const d = await r.json();
+  const d = await api('/api/config/bridge/backups');
   const list = d.ok ? d.backups : [];
   sel.innerHTML = list.length
     ? list.map(n => `<option value="${n}">${backupLabel(n)}</option>`).join('')
@@ -752,10 +859,9 @@ async function restoreBridgeBackup() {
   const name = document.getElementById('bridge-backups').value;
   if (!name) return;
   if (!confirm(`Visszaállítod a ${backupLabel(name)} mentést?\n\nA jelenlegi bridge.json előbb mentésre kerül.`)) return;
-  const r = await fetch('/api/config/bridge/restore', {
+  const d = await api('/api/config/bridge/restore', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name })
   });
-  const d = await r.json();
   if (d.ok) await loadBridgeConfig();
   fb.textContent = d.ok ? 'Visszaállítva — a bridge az újraindítás után használja.' : ('Hiba: ' + (d.error || '?'));
   fb.style.color = d.ok ? 'green' : 'red';
@@ -774,25 +880,47 @@ async function saveBridgeConfig(restart) {
       fb.textContent = 'Érvénytelen JSON: ' + e.message; fb.style.color = 'red'; return;
     }
   }
+  if (restart && !await confirmDialog('A mentés után a bridge újraindul, és a házvezérlés rövid időre megszakad. Folytatod?', 'Mentés és újraindítás', 'btn-warning')) return;
+
   const btn = document.getElementById('btn-save-restart');
+  const spinner = document.getElementById('save-restart-spinner');
+  const label = document.getElementById('save-restart-label');
+  const t0 = Date.now();
   if (restart) {
-    // The server refuses a second restart within 10 s too; this only spares the round trip.
-    btn.disabled = true;
-    setTimeout(() => { btn.disabled = false; }, 10000);
+    btn.disabled = true; spinner.style.display = ''; label.textContent = 'Újraindítás…';
   }
-  const r = await fetch('/api/config/bridge' + (restart ? '?restart=1' : ''), {
+  const d = await api('/api/config/bridge' + (restart ? '?restart=1' : ''), {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: content
   });
-  const d = await r.json();
-  fb.textContent = d.ok ? (restart ? 'Mentve, a bridge újraindult.' : 'Mentve.') : ('Hiba: ' + (d.error || '?'));
-  fb.style.color = d.ok ? 'green' : 'red';
-  if (d.ok || d.saved) loadBridgeBackups();
-  if (restart) await fetchStatus();
+  if (d.ok || d.saved) { setBridgeDirty(false); loadBridgeBackups(); }
+
+  let msg = d.ok ? (restart ? '' : 'Mentve.') : ('Hiba: ' + (d.error || '?'));
+  let good = d.ok;
+  if (d.ok && restart) {
+    // Report "restarted" only once the status really turns active (max ~30 s).
+    fb.style.color = ''; fb.textContent = 'Újraindítás…';
+    let up = false;
+    for (let i = 0; i < 20 && !up; i++) {
+      await new Promise(res => setTimeout(res, 1500));
+      await fetchStatus();
+      up = bridgeActive;
+    }
+    msg = up ? 'Mentve, a bridge újraindult.' : 'Mentve, de a bridge nem indult el 30 s alatt — nézd meg a naplót.';
+    good = up;
+  }
+  fb.textContent = msg;
+  fb.style.color = good ? 'green' : 'red';
+
+  if (restart) {
+    spinner.style.display = 'none'; label.textContent = 'Mentés és újraindítás';
+    // The server refuses a second restart within 10 s; after a failure retry at once.
+    const wait = d.ok ? Math.max(0, 10000 - (Date.now() - t0)) : 0;
+    setTimeout(() => { btn.disabled = false; }, wait);
+  }
 }
 
 async function loadDiscoveryConfig() {
-  const r = await fetch('/api/config/discovery');
-  const d = await r.json();
+  const d = await api('/api/config/discovery');
   document.getElementById('disc-config').value = d.ok ? d.content : ('Hiba: ' + d.error);
   document.getElementById('disc-save-fb').textContent = '';
 }
@@ -803,10 +931,9 @@ async function saveDiscoveryConfig() {
   try { JSON.parse(content); } catch (e) {
     fb.textContent = 'Érvénytelen JSON: ' + e.message; fb.style.color = 'red'; return;
   }
-  const r = await fetch('/api/config/discovery', {
+  const d = await api('/api/config/discovery', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: content
   });
-  const d = await r.json();
   fb.textContent = d.ok ? 'Mentve.' : ('Hiba: ' + (d.error || '?'));
   fb.style.color = d.ok ? 'green' : 'red';
 }
