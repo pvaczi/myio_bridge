@@ -1,9 +1,17 @@
-name: Release
+name: Build and release
 
+# Every push and PR builds and runs the tests; a "v*" tag also packages and
+# uploads the release, and only after the tests passed.
 on:
   push:
+    branches:
+      - "**"
     tags:
       - "v*"
+  pull_request:
+
+env:
+  BRIDGE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
 
 jobs:
   build:
@@ -43,23 +51,28 @@ jobs:
             -DVCPKG_TARGET_TRIPLET=x64-linux \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBRIDGE_VERSION=${{ github.ref_name }} \
+            -DBRIDGE_VERSION=$BRIDGE_VERSION \
             -G Ninja
 
       - name: Build
         run: ninja -C build
 
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
       - name: Smoke test
         run: |
           build/bridge --version
-          test "$(build/bridge --version)" = "myIO bridge ${{ github.ref_name }}"
+          test "$(build/bridge --version)" = "myIO bridge $BRIDGE_VERSION"
 
       - name: Strip and package
+        if: github.ref_type == 'tag'
         run: |
           strip build/bridge build/discovery
           tar -czf myio-bridge-linux-x86_64.tar.gz -C build bridge discovery
 
       - name: Upload release artifact
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v3
         with:
           files: myio-bridge-linux-x86_64.tar.gz
