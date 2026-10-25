@@ -20,6 +20,8 @@ When Home Assistant restarts, it sends a birth message (`homeassistant/status = 
 
 When the MQTT broker restarts (and retained state messages are lost), the bridge detects the reconnection and schedules a full state resync: on the next poll cycle it republishes the current state of all entities, restoring the broker's retained messages and keeping Home Assistant in sync.
 
+Both can also be triggered by hand from Home Assistant: the `myIO bridge` device has two `config` buttons, **Discovery újraküldése** (`<prefix>/bridge/rediscover`) and **Állapot újraszinkronizálása** (`<prefix>/bridge/resync`, takes effect at the next poll). Payload `PRESS`; neither sends an extra request to the myIO devices. There is deliberately no restart button — the Web UI provides that.
+
 ## Prerequisites
 
 - CMake ≥ 3.25

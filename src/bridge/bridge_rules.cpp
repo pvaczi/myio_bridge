@@ -232,4 +232,55 @@ std::string make_bridge_status_discovery(std::string_view prefix,
     return json::serialize(o);
 }
 
+namespace {
+struct ButtonMeta {
+    std::string_view action;  // command topic level and unique_id suffix
+    std::string_view name;    // HA entity name (shown to the user)
+    std::string_view icon;
+};
+
+ButtonMeta button_meta(BridgeButton b) {
+    switch (b) {
+        case BridgeButton::Rediscover: return {"rediscover", "Discovery újraküldése",       "mdi:broadcast"};
+        case BridgeButton::Resync:     return {"resync",     "Állapot újraszinkronizálása", "mdi:sync"};
+    }
+    return {"", "", ""};
+}
+} // namespace
+
+std::string bridge_button_command_topic(std::string_view prefix, BridgeButton b) {
+    return std::format("{}/bridge/{}", prefix, button_meta(b).action);
+}
+
+std::string bridge_button_discovery_topic(BridgeButton b) {
+    return std::format("homeassistant/button/{}_{}/config", kBridgeDeviceId, button_meta(b).action);
+}
+
+std::string make_bridge_button_discovery(std::string_view prefix,
+                                         std::string_view bridge_version, BridgeButton b) {
+    const auto m = button_meta(b);
+    json::object o{
+        {"name",              m.name},
+        {"unique_id",         std::format("{}_{}", kBridgeDeviceId, m.action)},
+        {"default_entity_id", std::format("button.{}_{}", kBridgeDeviceId, m.action)},
+        {"command_topic",     bridge_button_command_topic(prefix, b)},
+        {"payload_press",     kButtonPress},
+        {"availability_topic", bridge_availability_topic(prefix)},
+        {"entity_category",   "config"},
+        {"icon",              m.icon},
+        {"device",            bridge_device_block(bridge_version)},
+        {"origin",            origin_block(bridge_version)},
+    };
+    return json::serialize(o);
+}
+
+std::optional<BridgeButton> bridge_button_pressed(std::string_view prefix,
+                                                  std::string_view topic,
+                                                  std::string_view payload) {
+    if (payload != kButtonPress) return std::nullopt;
+    for (const auto b : kBridgeButtons)
+        if (topic == bridge_button_command_topic(prefix, b)) return b;
+    return std::nullopt;
+}
+
 } // namespace bridge

@@ -134,4 +134,21 @@ std::string bridge_status_discovery_topic();
 std::string make_bridge_status_discovery(std::string_view prefix,
                                          std::string_view bridge_version);
 
+// Bridge-level HA buttons (config category). Pressing one publishes kButtonPress
+// on "<prefix>/bridge/<action>" — under the reserved "bridge" level, so no
+// server ever claims the command. Both act only on the MQTT side: no extra
+// request reaches the myIO devices.
+enum class BridgeButton { Rediscover, Resync };
+inline constexpr BridgeButton kBridgeButtons[] = { BridgeButton::Rediscover, BridgeButton::Resync };
+inline constexpr std::string_view kButtonPress = "PRESS";
+
+std::string bridge_button_command_topic(std::string_view prefix, BridgeButton b);
+std::string bridge_button_discovery_topic(BridgeButton b);
+std::string make_bridge_button_discovery(std::string_view prefix,
+                                         std::string_view bridge_version, BridgeButton b);
+// The button a received command addresses; nullopt = not a bridge button press.
+std::optional<BridgeButton> bridge_button_pressed(std::string_view prefix,
+                                                  std::string_view topic,
+                                                  std::string_view payload);
+
 } // namespace bridge

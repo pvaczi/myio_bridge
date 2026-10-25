@@ -711,7 +711,7 @@ void ServerBridge::schedule_resync() {
     for (auto& [id, v] : last_sensor_logged_val_) v = std::numeric_limits<double>::max();
     published_available_.reset();  // republish the server availability too
     syncing_ = true;
-    myio::log("[{}] Broker reconnected – resync scheduled.", cfg_.server_id);
+    myio::log("[{}] State resync scheduled.", cfg_.server_id);
 }
 
 // ── Availability ──────────────────────────────────────────────────────────────
@@ -1458,6 +1458,16 @@ net::awaitable<void> Bridge::publish_all_discovery() {
     } catch (const std::exception& ex) {
         myio::log(stderr, "[bridge] Bridge discovery publish failed: {}", myio::short_what(ex));
     }
+    for (const auto b : kBridgeButtons) {
+        try {
+            co_await publisher_->async_publish(
+                bridge_button_discovery_topic(b),
+                make_bridge_button_discovery(cfg_.mqtt.topic_prefix, BRIDGE_VERSION, b), true);
+        } catch (const std::exception& ex) {
+            myio::log(stderr, "[bridge] Bridge button discovery publish failed: {}",
+                      myio::short_what(ex));
+        }
+    }
     // All servers' discovery is independent — publish it concurrently instead
     // of waiting for each server's full discovery (incl. its info fetch and
     // capability poll) to finish before starting the next one.
@@ -1475,18 +1485,36 @@ net::awaitable<void> Bridge::publish_bridge_online() {
 }
 
 void Bridge::schedule_birth_discovery() {
-    if (birth_discovery_pending_) {
-        myio::log("[bridge] HA birth – discovery re-send already pending, coalesced.");
-        return;
-    }
-    birth_discovery_pending_ = true;
-
     // Random 1–10 s: HA (and every other MQTT integration) is still starting up
     // right after its birth message; spreading the re-send avoids the burst.
     static thread_local std::mt19937 rng{std::random_device{}()};
     const auto delay = std::chrono::milliseconds(
         std::uniform_int_distribution<int>(1000, 10000)(rng));
     myio::log("[bridge] HA restarted – republishing discovery in {}ms.", delay.count());
+    schedule_discovery_resend(delay);
+}
+
+void Bridge::handle_bridge_button(BridgeButton b) {
+    switch (b) {
+        case BridgeButton::Rediscover:
+            myio::log("[bridge] HA button – republishing discovery.");
+            schedule_discovery_resend(std::chrono::milliseconds(0));
+            break;
+        case BridgeButton::Resync:
+            // Takes effect at each server's next poll: no extra myIO request.
+            myio::log("[bridge] HA button – full state resync at the next poll.");
+            for (auto& srv : servers_)
+                srv->schedule_resync();
+            break;
+    }
+}
+
+void Bridge::schedule_discovery_resend(std::chrono::milliseconds delay) {
+    if (discovery_resend_pending_) {
+        myio::log("[bridge] Discovery re-send already pending, coalesced.");
+        return;
+    }
+    discovery_resend_pending_ = true;
 
     net::co_spawn(ioc_,
         [this, delay]() -> net::awaitable<void> {
@@ -1495,7 +1523,7 @@ void Bridge::schedule_birth_discovery() {
             co_await t.async_wait(net::use_awaitable);
             // Cleared before the re-send: a birth arriving during it schedules
             // a new one instead of being lost.
-            birth_discovery_pending_ = false;
+            discovery_resend_pending_ = false;
             co_await publish_all_discovery();
         },
         [](std::exception_ptr ep) {
@@ -1567,6 +1595,10 @@ net::awaitable<void> Bridge::command_loop() {
 
             if (topic == "homeassistant/status" && payload == "online") {
                 schedule_birth_discovery();
+                continue;
+            }
+            if (const auto b = bridge_button_pressed(cfg_.mqtt.topic_prefix, topic, payload)) {
+                handle_bridge_button(*b);
                 continue;
             }
 

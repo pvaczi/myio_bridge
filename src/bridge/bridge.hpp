@@ -228,16 +228,22 @@ private:
     // Retained "online" on the bridge availability topic; errors are logged.
     net::awaitable<void> publish_bridge_online();
 
-    // HA birth message: re-sends discovery after a random 1–10 s delay in a
-    // detached coroutine, so command processing is not blocked; births that
-    // arrive while one is pending are coalesced into it.
+    // Re-sends discovery after `delay` in a detached coroutine, so command
+    // processing is not blocked; requests that arrive while one is pending are
+    // coalesced into it.
+    void schedule_discovery_resend(std::chrono::milliseconds delay);
+
+    // HA birth message: re-send after a random 1–10 s delay.
     void schedule_birth_discovery();
+
+    // A bridge button press from HA (see BridgeButton).
+    void handle_bridge_button(BridgeButton b);
 
     config::BridgeConfig                       cfg_;
     net::io_context&                           ioc_;
     std::shared_ptr<ha::IHAPublisher>          publisher_;
     std::vector<std::unique_ptr<ServerBridge>> servers_;
-    bool                                       birth_discovery_pending_ = false;
+    bool                                       discovery_resend_pending_ = false;
     bool                                       stopping_ = false;
 };
 

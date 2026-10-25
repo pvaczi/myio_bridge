@@ -398,6 +398,27 @@ void test_discovery_blocks() {
     CHECK(!bv.contains("availability"));
     CHECK(bv.at("device").as_object().at("identifiers").as_array().at(0).as_string() == "myio_bridge");
     CHECK(bv.at("device").as_object().at("sw_version").as_string() == "v1.5.0");
+
+    // Bridge buttons: on the bridge device, available with the bridge only.
+    using bridge::BridgeButton;
+    CHECK(bridge::bridge_button_discovery_topic(BridgeButton::Rediscover) ==
+          "homeassistant/button/myio_bridge_rediscover/config");
+    const auto rb = json::parse(bridge::make_bridge_button_discovery(
+        "myio", "v1.5.0", BridgeButton::Resync)).as_object();
+    CHECK(rb.at("command_topic").as_string() == "myio/bridge/resync");
+    CHECK(rb.at("payload_press").as_string() == "PRESS");
+    CHECK(rb.at("availability_topic").as_string() == "myio/bridge/availability");
+    CHECK(rb.at("entity_category").as_string() == "config");
+    CHECK(rb.at("unique_id").as_string() == "myio_bridge_resync");
+    CHECK(rb.at("device").as_object().at("identifiers").as_array().at(0).as_string() == "myio_bridge");
+
+    CHECK(bridge::bridge_button_pressed("myio", "myio/bridge/rediscover", "PRESS") ==
+          BridgeButton::Rediscover);
+    CHECK(bridge::bridge_button_pressed("myio", "myio/bridge/resync", "PRESS") ==
+          BridgeButton::Resync);
+    CHECK(!bridge::bridge_button_pressed("myio", "myio/bridge/resync", "ON"));
+    CHECK(!bridge::bridge_button_pressed("myio", "other/bridge/resync", "PRESS"));
+    CHECK(!bridge::bridge_button_pressed("myio", "myio/bridge/availability", "PRESS"));
 }
 
 // ── discovery merge ───────────────────────────────────────────────────────────
