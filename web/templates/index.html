@@ -189,7 +189,10 @@
     </div>
     <div id="bridge-config-visual" style="display:none;"></div>
     <div id="bridge-popup-footer">
-      <button class="btn btn-sm btn-primary" onclick="saveBridgeConfig()">Save</button>
+      <button class="btn btn-sm btn-primary me-2" onclick="saveBridgeConfig(false)">Save</button>
+      <button id="btn-save-restart" class="btn btn-sm btn-warning me-3" onclick="saveBridgeConfig(true)">Mentés és újraindítás</button>
+      <select id="bridge-backups" class="form-select form-select-sm me-2" style="width:auto;" title="Korábbi bridge.json-mentések"></select>
+      <button class="btn btn-sm btn-outline-secondary" onclick="restoreBridgeBackup()">Visszaállítás</button>
       <span id="bridge-save-fb" class="save-fb"></span>
     </div>
   </div>
@@ -722,9 +725,40 @@ async function loadBridgeConfig() {
   if (bridgeEditorMode === 'visual' && d.ok) {
     try { renderBridgeVisualEditor(JSON.parse(content)); } catch {}
   }
+  loadBridgeBackups();
 }
 
-async function saveBridgeConfig() {
+// bridge.json.bak.20261025-214500 → 2026.10.25 21:45:00
+function backupLabel(name) {
+  const m = name.match(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/);
+  return m ? `${m[1]}.${m[2]}.${m[3]} ${m[4]}:${m[5]}:${m[6]}` : name;
+}
+
+async function loadBridgeBackups() {
+  const sel = document.getElementById('bridge-backups');
+  const r = await fetch('/api/config/bridge/backups');
+  const d = await r.json();
+  const list = d.ok ? d.backups : [];
+  sel.innerHTML = list.length
+    ? list.map(n => `<option value="${n}">${backupLabel(n)}</option>`).join('')
+    : '<option value="">nincs mentés</option>';
+}
+
+async function restoreBridgeBackup() {
+  const fb = document.getElementById('bridge-save-fb');
+  const name = document.getElementById('bridge-backups').value;
+  if (!name) return;
+  if (!confirm(`Visszaállítod a ${backupLabel(name)} mentést?\n\nA jelenlegi bridge.json előbb mentésre kerül.`)) return;
+  const r = await fetch('/api/config/bridge/restore', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name })
+  });
+  const d = await r.json();
+  if (d.ok) await loadBridgeConfig();
+  fb.textContent = d.ok ? 'Visszaállítva — a bridge az újraindítás után használja.' : ('Hiba: ' + (d.error || '?'));
+  fb.style.color = d.ok ? 'green' : 'red';
+}
+
+async function saveBridgeConfig(restart) {
   const fb = document.getElementById('bridge-save-fb');
   let content;
   if (bridgeEditorMode === 'visual') {
@@ -737,12 +771,20 @@ async function saveBridgeConfig() {
       fb.textContent = 'Érvénytelen JSON: ' + e.message; fb.style.color = 'red'; return;
     }
   }
-  const r = await fetch('/api/config/bridge', {
+  const btn = document.getElementById('btn-save-restart');
+  if (restart) {
+    // The server refuses a second restart within 10 s too; this only spares the round trip.
+    btn.disabled = true;
+    setTimeout(() => { btn.disabled = false; }, 10000);
+  }
+  const r = await fetch('/api/config/bridge' + (restart ? '?restart=1' : ''), {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: content
   });
   const d = await r.json();
-  fb.textContent = d.ok ? 'Mentve.' : ('Hiba: ' + (d.error || '?'));
+  fb.textContent = d.ok ? (restart ? 'Mentve, a bridge újraindult.' : 'Mentve.') : ('Hiba: ' + (d.error || '?'));
   fb.style.color = d.ok ? 'green' : 'red';
+  if (d.ok || d.saved) loadBridgeBackups();
+  if (restart) await fetchStatus();
 }
 
 async function loadDiscoveryConfig() {

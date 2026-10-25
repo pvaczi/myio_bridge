@@ -462,6 +462,8 @@ Features:
 - **Discovery mode**: run discovery (with confirmation — merges into `bridge.json`, see the discovery re-run rules), edit `discovery_input.json`; only available when the bridge is stopped
 - **Live log**: last 200 lines of the bridge's systemd journal, with manual refresh or auto-refresh every 3 seconds
 - **`bridge.json` editor**: opens in a resizable, draggable floating popup (760×560 px). Toggle between **Raw** (plain textarea) and **Visual** modes via the button in the popup header.
+  - **Save** validates with `bridge --check-config` and refuses an invalid file; **Mentés és újraindítás** also restarts the bridge (at most once per 10 s — every restart re-polls each myIO server).
+  - Every save that changes the file first copies the previous version to `data/bridge.json.bak.<YYYYMMDD-HHMMSS>` (newest 5 kept); the footer drop-down + **Visszaállítás** restores one (the current file is backed up first, the bridge picks it up on its next restart).
   - **Visual mode** — a custom form editor built on Bootstrap; no external library required:
     - Collapsible sections for MQTT, each server, and per-server device groups (PCA, Relays, PWM, Sensors, Covers)
     - Each device fits on a single line: `id · name · type · sensor-id (S:) · enabled · delete`

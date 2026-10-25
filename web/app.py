@@ -2,8 +2,11 @@ import hmac
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
+import threading
+import time
 from functools import wraps
 from flask import Flask, Response, jsonify, render_template, request
 
@@ -18,6 +21,13 @@ BIN_DIR = os.environ.get("MYIO_BIN_DIR", "/opt/myio-bridge/bin")
 BRIDGE_JSON = os.path.join(DATA_DIR, "bridge.json")
 DISCOVERY_JSON = os.path.join(DATA_DIR, "discovery_input.json")
 PASSWORD_FILE = os.path.join(DATA_DIR, "webui_password")
+
+BRIDGE_JSON_BASENAME = os.path.basename(BRIDGE_JSON)
+_BACKUP_NAME = re.compile(r'^bridge\.json\.bak\.\d{8}-\d{6}$')
+BACKUP_KEEP = 5
+RESTART_DEBOUNCE_SEC = 10
+_restart_lock = threading.Lock()
+_last_restart = None
 
 
 def _load_credentials():
@@ -180,8 +190,75 @@ def _check_bridge_config(tmp_path):
     return None
 
 
+def _list_backups():
+    """Backup file names of bridge.json, newest first (the timestamp sorts)."""
+    try:
+        names = [n for n in os.listdir(DATA_DIR) if _BACKUP_NAME.match(n)]
+    except OSError:
+        return []
+    return sorted(names, reverse=True)
+
+
+def _backup_bridge_config(new_content):
+    """Copies the current bridge.json aside before it is overwritten; keeps the
+    newest BACKUP_KEEP. No backup when nothing would be lost (missing file,
+    unchanged content, or a same-second backup already exists) — a duplicate
+    would push a real older state out of the kept window."""
+    try:
+        with open(BRIDGE_JSON) as f:
+            if f.read() == new_content:
+                return
+    except FileNotFoundError:
+        return
+    name = BRIDGE_JSON_BASENAME + ".bak." + time.strftime("%Y%m%d-%H%M%S")
+    dst = os.path.join(DATA_DIR, name)
+    if not os.path.exists(dst):
+        shutil.copy2(BRIDGE_JSON, dst)
+        os.chmod(dst, 0o600)
+    for old in _list_backups()[BACKUP_KEEP:]:
+        os.unlink(os.path.join(DATA_DIR, old))
+
+
+def _restart_bridge():
+    """Returns the error text or None. A second restart within
+    RESTART_DEBOUNCE_SEC is refused: each restart re-polls every myIO server."""
+    global _last_restart
+    with _restart_lock:
+        now = time.monotonic()
+        if _last_restart is not None and now - _last_restart < RESTART_DEBOUNCE_SEC:
+            return f"az előző újraindítás óta nem telt el {RESTART_DEBOUNCE_SEC} mp"
+        _last_restart = now
+    result = subprocess.run(
+        ["sudo", "systemctl", "restart", "myio-bridge"],
+        capture_output=True, text=True
+    )
+    return None if result.returncode == 0 else (result.stderr.strip() or "restart hiba")
+
+
+@app.route("/api/config/bridge/backups")
+def config_bridge_backups():
+    return jsonify({"ok": True, "backups": _list_backups()})
+
+
+@app.route("/api/config/bridge/restore", methods=["POST"])
+def config_bridge_restore():
+    name = (request.get_json(silent=True) or {}).get("name", "")
+    if not _BACKUP_NAME.match(name):
+        return jsonify({"ok": False, "error": "érvénytelen mentésnév"}), 400
+    try:
+        with open(os.path.join(DATA_DIR, name)) as f:
+            content = f.read()
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 404
+    return _write_config(BRIDGE_JSON, content)
+
+
 def _save_config(path):
-    content = request.get_data(as_text=True)
+    return _write_config(path, request.get_data(as_text=True),
+                         restart=request.args.get("restart") == "1")
+
+
+def _write_config(path, content, restart=False):
     try:
         json.loads(content)
     except (json.JSONDecodeError, ValueError) as e:
@@ -201,13 +278,18 @@ def _save_config(path):
                 if err:
                     os.unlink(tmp_path)
                     return jsonify({"ok": False, "error": f"Érvénytelen konfig: {err}"}), 400
+                _backup_bridge_config(content)
             os.replace(tmp_path, path)
         except BaseException:
             os.unlink(tmp_path)
             raise
-        return jsonify({"ok": True})
     except OSError as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+    if restart:
+        err = _restart_bridge()
+        if err:
+            return jsonify({"ok": False, "saved": True, "error": f"Mentve, de: {err}"}), 409
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
