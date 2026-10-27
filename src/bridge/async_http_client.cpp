@@ -257,7 +257,9 @@ net::awaitable<void> AsyncHttpClient::async_send_command(std::string post_body) 
     for (int attempt = 1; attempt <= max_attempts; ++attempt) {
         bool retry = false;
         try {
-            co_await do_post("/", post_body);
+            // POST /info.json answers with the ~195 B info JSON; POST / with the
+            // full 16–19 kB index page (measured 2026.10.27). Both execute the command.
+            co_await do_post("/info.json", post_body);
             co_return;
         } catch (const HttpStatusError&) {
             // The device answered and refused: retrying only adds W5100 traffic.

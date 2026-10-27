@@ -33,7 +33,7 @@ public:
     [[nodiscard]]
     net::awaitable<ServerState> async_poll() override;
 
-    // POST / – sends command string to myIO
+    // POST /info.json – sends command string to myIO
     // Example body: "PCA_ON=2005" or "PCA_OFF=2022&PCA_ON=2023"
     net::awaitable<void> async_send_command(std::string post_body) override;
 
