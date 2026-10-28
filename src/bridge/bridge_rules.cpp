@@ -4,6 +4,7 @@
 
 #include <charconv>
 #include <format>
+#include <stdexcept>
 #include <string>
 
 namespace bridge {
@@ -138,6 +139,56 @@ PostVerdict classify_post_status(std::optional<int> status) {
     if (*status == 401) return PostVerdict::Unauthorized;
     if (*status < 200 || *status > 399) return PostVerdict::Rejected;
     return PostVerdict::Accepted;
+}
+
+std::string extract_json_body(const std::string& raw, std::string_view host) {
+    // A 401 is recognised from the status line first: its header block is
+    // complete and its HTML body has no JSON, so it must not fall through to
+    // the generic "No JSON found" error.
+    if (parse_http_status(raw) == 401)
+        throw std::runtime_error(
+            std::format("[{}] HTTP 401 – wrong username or password", host));
+
+    // Find the end of the HTTP header block (\r\n\r\n or bare \n\n).
+    std::size_t body_start = std::string::npos;
+    if (const auto pos = raw.find("\r\n\r\n"); pos != std::string::npos)
+        body_start = pos + 4;
+    else if (const auto pos2 = raw.find("\n\n"); pos2 != std::string::npos)
+        body_start = pos2 + 2;
+
+    if (body_start == std::string::npos) {
+        if (raw.find("401") != std::string::npos)
+            throw std::runtime_error(
+                std::format("[{}] HTTP 401 – wrong username or password", host));
+        throw std::runtime_error(
+            std::format("[{}] No HTTP header terminator found in response", host));
+    }
+
+    const auto start = raw.find('{', body_start);
+    if (start == std::string::npos)
+        throw std::runtime_error(
+            std::format("[{}] No JSON found in response body", host));
+
+    const auto end = raw.rfind('}');
+    if (end == std::string::npos || end < start)
+        throw std::runtime_error(
+            std::format("[{}] Malformed JSON in response", host));
+
+    return raw.substr(start, end - start + 1);
+}
+
+std::vector<std::string> chunk_post_fragments(const std::vector<std::string>& fragments,
+                                              std::size_t max_len) {
+    std::vector<std::string> chunks;
+    for (const auto& f : fragments) {
+        if (f.empty()) continue;
+        // '&' separator costs one char; an oversized fragment goes alone.
+        if (!chunks.empty() && chunks.back().size() + 1 + f.size() <= max_len)
+            chunks.back() += '&' + f;
+        else
+            chunks.push_back(f);
+    }
+    return chunks;
 }
 
 std::string bridge_availability_topic(std::string_view prefix) {

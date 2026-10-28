@@ -82,7 +82,7 @@ struct ServerConfig {
     std::uint16_t         port             = 80;
     std::string           user             = "admin";
     std::string           password         = "admin";
-    int                   poll_interval_sec = 5;   // matches the discovery default; 2s is too aggressive for the W5100
+    int                   poll_interval_sec = 5;   // matches the discovery default; 2s is too aggressive for the single-connection device
     double                sensor_log_threshold = 0.1;  // min. change to log; 0 = log every publish
     bool                  log_startup_sync     = false; // log entity states during startup/resync
     int                   coalesce_window_ms   = 5;     // wait after 1st command to batch siblings

@@ -41,38 +41,8 @@ struct HttpStatusError : std::runtime_error {
 };
 } // namespace
 
-// Extracts JSON content from a raw HTTP response.
-// Bypasses Beast's HTTP parser because the myIO server sends non-standard headers
-// (uses bare \n instead of \r\n). Searches only in the body to avoid false
-// matches on { or } characters that may appear in HTTP headers.
-static std::string extract_json(const std::string& raw, std::string_view host) {
-    // Find the end of the HTTP header block (\r\n\r\n or bare \n\n).
-    std::size_t body_start = std::string::npos;
-    if (const auto pos = raw.find("\r\n\r\n"); pos != std::string::npos)
-        body_start = pos + 4;
-    else if (const auto pos2 = raw.find("\n\n"); pos2 != std::string::npos)
-        body_start = pos2 + 2;
-
-    if (body_start == std::string::npos) {
-        if (raw.find("401") != std::string::npos)
-            throw std::runtime_error(
-                std::format("[{}] HTTP 401 – wrong username or password", host));
-        throw std::runtime_error(
-            std::format("[{}] No HTTP header terminator found in response", host));
-    }
-
-    const auto start = raw.find('{', body_start);
-    if (start == std::string::npos)
-        throw std::runtime_error(
-            std::format("[{}] No JSON found in response body", host));
-
-    const auto end = raw.rfind('}');
-    if (end == std::string::npos || end < start)
-        throw std::runtime_error(
-            std::format("[{}] Malformed JSON in response", host));
-
-    return raw.substr(start, end - start + 1);
-}
+// JSON extraction from a raw GET response: bridge::extract_json_body
+// (bridge_rules.cpp; bypasses Beast's parser because of the non-standard headers).
 
 // ── Constructor ───────────────────────────────────────────────────────────────
 
@@ -133,7 +103,7 @@ net::awaitable<std::string> AsyncHttpClient::do_get(std::string_view target) {
     beast::error_code sec;
     stream.socket().shutdown(tcp::socket::shutdown_both, sec);
 
-    co_return extract_json(raw, cfg_.host);
+    co_return bridge::extract_json_body(raw, cfg_.host);
 }
 
 // ── Internal POST ─────────────────────────────────────────────────────────────
@@ -181,7 +151,7 @@ net::awaitable<void> AsyncHttpClient::do_post(std::string_view target,
     // caller publishes an optimistic state the device never took.
     // All three devices answer a POST with "HTTP/1.1 200 OK" (measured
     // 2026.10.15), so an empty or status-less response is a failed exchange
-    // (typically a dropped W5100 connection): a plain error, hence retried.
+    // (typically a connection the device reset): a plain error, hence retried.
     const auto status = bridge::parse_http_status(raw);
     switch (bridge::classify_post_status(status)) {
     case bridge::PostVerdict::Accepted:
@@ -244,7 +214,8 @@ net::awaitable<ServerState> AsyncHttpClient::async_poll() {
 }
 
 net::awaitable<void> AsyncHttpClient::async_send_command(std::string post_body) {
-    // Retry up to 3 times to handle transient W5100 socket drops.
+    // Retry up to 3 times: before fw 3.12 port 80 serves one connection at a
+    // time and a concurrent one (e.g. the Android app) may be reset.
     // Delay uses an async timer so the coroutine yield doesn't block the io_context.
     constexpr int   max_attempts   = 3;
     constexpr auto  retry_delay    = std::chrono::milliseconds(500);
@@ -262,7 +233,7 @@ net::awaitable<void> AsyncHttpClient::async_send_command(std::string post_body) 
             co_await do_post("/info.json", post_body);
             co_return;
         } catch (const HttpStatusError&) {
-            // The device answered and refused: retrying only adds W5100 traffic.
+            // The device answered and refused: retrying only adds device traffic.
             throw;
         } catch (const std::exception&) {
             if (attempt == max_attempts) throw;

@@ -2,6 +2,7 @@
 
 #include "bridge_rules.hpp"
 #include "config_reader.hpp"
+#include "dsens_parser.hpp"
 #include "merge.hpp"
 #include "sd_notify.hpp"
 
@@ -325,6 +326,83 @@ void test_post_verdict() {
     CHECK(classify_post_status(bridge::parse_http_status(
               "HTTP/1.1 200 OK\nContent-Type: text/html\n\n<html>")) == PostVerdict::Accepted);
     CHECK(classify_post_status(bridge::parse_http_status("")) == PostVerdict::NoStatus);
+}
+
+void test_post_chunking() {
+    using bridge::chunk_post_fragments;
+    using V = std::vector<std::string>;
+    CHECK(chunk_post_fragments({}).empty());
+    CHECK(chunk_post_fragments({"a=1", "b=2"}) == (V{"a=1&b=2"}));
+    CHECK(chunk_post_fragments({"", "a=1"}) == (V{"a=1"}));
+    // Exact fit (3 + 1 + 3 = 7) stays together, one over splits.
+    CHECK(chunk_post_fragments({"aaa", "bbb"}, 7) == (V{"aaa&bbb"}));
+    CHECK(chunk_post_fragments({"aaa", "bbb"}, 6) == (V{"aaa", "bbb"}));
+    // A fragment longer than the limit goes alone and is never split.
+    const std::string big(30, 'x');
+    CHECK(chunk_post_fragments({"a=1", big, "b=2"}, 10) == (V{"a=1", big, "b=2"}));
+
+    // 30 fragments of 12 chars: every chunk <= 200, nothing lost or reordered.
+    V frags;
+    for (int i = 0; i < 30; ++i) frags.push_back(std::format("PCA*{}=191", 2001 + i));
+    const auto chunks = chunk_post_fragments(frags);
+    CHECK(chunks.size() > 1);
+    std::string rejoined;
+    bool all_fit = true;
+    for (const auto& c : chunks) {
+        if (c.size() > 200) all_fit = false;
+        rejoined += (rejoined.empty() ? "" : "&") + c;
+    }
+    CHECK(all_fit);
+    std::string expected;
+    for (const auto& f : frags) expected += (expected.empty() ? "" : "&") + f;
+    CHECK(rejoined == expected);
+}
+
+void test_extract_json_body() {
+    using bridge::extract_json_body;
+    CHECK(extract_json_body("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"a\":1}", "h") == "{\"a\":1}");
+    CHECK(extract_json_body("HTTP/1.1 200 OK\nContent-Type: application/json\n\n{\"a\":1}", "h") == "{\"a\":1}");
+
+    auto throws_with = [](const std::string& raw, const char* needle) {
+        try { (void)extract_json_body(raw, "h"); }
+        catch (const std::exception& e) {
+            return std::string_view(e.what()).find(needle) != std::string_view::npos;
+        }
+        return false;
+    };
+    // The real 401 reply: complete header block, HTML body without JSON.
+    const std::string crlf401 =
+        "HTTP/1.1 401 Authorization Required\r\nWWW-Authenticate: Basic realm=\"Secure Area\"\r\n"
+        "Content-Type: text/html\r\nConnnection: close\r\n\r\n<html><body>401</body></html>";
+    CHECK(throws_with(crlf401, "401"));
+    std::string lf401;
+    for (const char c : crlf401) if (c != '\r') lf401 += c;
+    CHECK(throws_with(lf401, "401"));
+    CHECK(throws_with("HTTP/1.1 200 OK\r\n\r\n<html></html>", "No JSON"));
+    CHECK(throws_with("HTTP/1.1 200 OK\r\nX: y", "header terminator"));
+}
+
+void test_unreadable_outputs_skipped() {
+    // {"id":N} without "state" = the configured user cannot read that output.
+    const auto st = myio::DSensOutParser::parse(
+        R"({"relays":{"0":{"id":1,"state":1},"1":{"id":2}},)"
+        R"("PCA":{"0":{"id":2001,"state":50},"1":{"id":2002}},)"
+        R"("PWM":{"0":{"id":101,"state":0},"1":{"id":102}}})", "t");
+    CHECK(st.relay_outputs.size() == 1 && st.relay_outputs[0].id == 1);
+    CHECK(st.pca_outputs.size() == 1 && st.pca_outputs[0].id == 2001);
+    CHECK(st.pwm_outputs.size() == 1 && st.pwm_outputs[0].id == 101);
+}
+
+void test_sensor_activator_classification() {
+    // sensor: 0 = none, 255 = SUN, 1..254 = sensor id. The lighting device has
+    // outputs with sensor=255, so 255 stays classified as sensor-controlled.
+    const auto st = myio::DSensOutParser::parse(
+        R"({"PCA":{"0":{"id":2001,"state":0,"sensor":0},"1":{"id":2002,"state":0,"sensor":7},)"
+        R"("2":{"id":2003,"state":0,"sensor":255}}})", "t");
+    CHECK(st.pca_outputs.size() == 3);
+    CHECK(!st.pca_outputs[0].sensor_controlled);
+    CHECK(st.pca_outputs[1].sensor_controlled);
+    CHECK(st.pca_outputs[2].sensor_controlled && st.pca_outputs[2].sensor_id == 255);
 }
 
 void test_reserved_server_id() {
@@ -696,6 +774,10 @@ int main() {
     test_percent_raw_conversion();
     test_http_status_parsing();
     test_post_verdict();
+    test_post_chunking();
+    test_extract_json_body();
+    test_unreadable_outputs_skipped();
+    test_sensor_activator_classification();
     test_reserved_server_id();
     test_availability();
     test_sensor_class();

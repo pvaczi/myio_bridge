@@ -44,10 +44,10 @@ private:
     net::awaitable<void> do_post(std::string_view target,
                                   std::string_view body);
 
-    // Suspends until this client holds its device gate. The myIO device (W5100,
-    // 4 sockets, single-threaded server loop) must only ever see one bridge
-    // connection at a time — a poll GET and a command POST on two parallel
-    // sockets would pin two device sockets for up to a full timeout each.
+    // Suspends until this client holds its device gate. Before fw 3.12 the myIO
+    // device serves ONE connection at a time on port 80 and may reset a
+    // concurrent one, so it must only ever see one bridge connection at a time —
+    // a poll GET and a command POST must not run in parallel.
     net::awaitable<void> lock_gate();
 
     HttpConfig cfg_;

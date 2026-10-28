@@ -63,6 +63,8 @@ static void parse_relays(const json::object& obj, ServerState& state) {
 
         const auto idx = key_to_int(key);
         if (!idx) continue;
+        // {"id":N} without "state": the configured user cannot read this output.
+        if (!entry->contains("state")) continue;
 
         RelayOutput r;
         r.index             = *idx;
@@ -70,6 +72,9 @@ static void parse_relays(const json::object& obj, ServerState& state) {
         r.name              = trim(str_or(*entry, "description"));
         r.state             = int_or(*entry, "state") != 0;
         r.sensor_id         = int_or(*entry, "sensor");
+        // "sensor": 0 = none, 255 = SUN (sunrise/sunset), 1..254 = sensor id.
+        // 255 is still counted as controlled: the lighting device has outputs
+        // with sensor=255, so the classification is deliberately unchanged.
         r.sensor_controlled = r.sensor_id != 0;
         r.sensor_on         = int_or(*entry, "sensorON");
         r.sensor_off        = int_or(*entry, "sensorOFF");
@@ -85,6 +90,7 @@ static void parse_pca(const json::object& obj, ServerState& state) {
 
         const auto idx = key_to_int(key);
         if (!idx) continue;
+        if (!entry->contains("state")) continue;  // unreadable for this user
 
         PcaOutput p;
         p.index             = *idx;
@@ -111,6 +117,7 @@ static void parse_pwm(const json::object& obj, ServerState& state) {
 
         const auto idx = key_to_int(key);
         if (!idx) continue;
+        if (!entry->contains("state")) continue;  // unreadable for this user
 
         PwmOutput p;
         p.index             = *idx;

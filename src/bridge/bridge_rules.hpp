@@ -11,6 +11,7 @@
 #include <boost/json/object.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -66,6 +67,20 @@ std::optional<CoverCommand> parse_cover_command(std::string_view payload);
 // Tolerates the myIO quirks: bare-LF line endings, missing or odd reason phrase.
 // nullopt if there is no well-formed status line.
 std::optional<int> parse_http_status(std::string_view raw);
+
+// JSON object text of a raw GET response (the myIO server's headers are
+// non-standard, so Beast's parser is bypassed). Accepts CRLF and bare-LF header
+// terminators. Throws std::runtime_error: HTTP 401 (from the status line)
+// as a credentials error, otherwise on a missing header block or JSON.
+std::string extract_json_body(const std::string& raw, std::string_view host);
+
+// The device drops everything after 255 characters of a POST line. Joins the
+// '&'-separated fragments into chunks of at most max_len characters, never
+// splitting a fragment; a fragment longer than max_len goes alone. Empty
+// fragments are skipped.
+inline constexpr std::size_t kMaxPostChunk = 200;
+std::vector<std::string> chunk_post_fragments(const std::vector<std::string>& fragments,
+                                              std::size_t max_len = kMaxPostChunk);
 
 enum class PostVerdict { Accepted, Unauthorized, Rejected, NoStatus };
 

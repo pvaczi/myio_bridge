@@ -153,8 +153,8 @@ static ServerConfig parse_server(const json::object& o) {
         throw std::runtime_error("Server id 'bridge' is reserved");
     const auto ctx = std::format("Server '{}'", sc.server_id);
     sc.port = port_or(o, "port", 80, ctx);
-    // The W5100 on the myIO board has only 4 sockets: a zero/negative interval
-    // turns the poll loop into a request storm that makes the device unreachable.
+    // Before fw 3.12 port 80 serves one connection at a time: a zero/negative
+    // interval turns the poll loop into a request storm that starves other clients.
     if (sc.poll_interval_sec <= 0)
         throw std::runtime_error(std::format(
             "{}: poll_interval_sec must be > 0 (got {})", ctx, sc.poll_interval_sec));

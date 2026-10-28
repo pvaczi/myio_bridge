@@ -445,7 +445,8 @@ net::awaitable<void> ServerBridge::publish_discovery() {
 
     // HTTP to the device only on the first discovery, before poll_loop starts
     // (sequential): later discoveries (HA birth, reconnect) would run in
-    // parallel with the poll loop's requests, and the W5100 has only 4 sockets.
+    // parallel with the poll loop's requests, and before fw 3.12 the device
+    // serves only one connection at a time on port 80.
     // From then on poll_loop owns the device traffic: it keeps pca_is_pwm_
     // current and fetches a still-missing firmware version itself.
     const bool may_query_device = !poll_started_;
@@ -885,8 +886,8 @@ net::awaitable<void> ServerBridge::poll_loop() {
     }
     syncing_ = true;
 
-    // While the device is unreachable (e.g. the multi-minute W5100 lockup),
-    // probing it at the normal rate only ties up its sockets — back off instead.
+    // While the device is unreachable (e.g. a multi-minute lockup), probing it
+    // at the normal rate only adds load to it — back off instead.
     // (consecutive_errors_ is a member: it is also published in the diag JSON.)
 
     // A still-missing firmware version is retried after the first successful
@@ -1090,7 +1091,7 @@ net::awaitable<void> ServerBridge::poll_loop() {
             last_poll_error_.clear();
             syncing_ = false;
         }
-        // A single failed poll (short W5100 hiccup) must not flap every entity to
+        // A single failed poll (short device hiccup) must not flap every entity to
         // "unavailable": offline only after several consecutive failures.
         constexpr int kOfflineAfterFailedPolls = 3;
         if (!caught)
@@ -1408,21 +1409,26 @@ net::awaitable<void> ServerBridge::process_command_batch(
     const std::vector<std::pair<std::string, std::string>>& batch) {
     std::vector<PreparedCommand> prepared;
     prepared.reserve(batch.size());
-    std::string joined;
+    std::vector<std::string> fragments;
     for (const auto& [topic, payload] : batch) {
         auto pc = prepare_command(topic, payload);
         if (!pc) continue;
-        if (!pc->post.empty()) {
-            if (!joined.empty()) joined += '&';
-            joined += pc->post;
-        }
+        if (!pc->post.empty()) fragments.push_back(pc->post);
         prepared.push_back(std::move(*pc));
     }
-    if (!joined.empty()) {
-        if (prepared.size() > 1)
-            myio::log("[{}] [broker to myIO] batch ({} cmd) → {}",
-                      cfg_.server_id, prepared.size(), joined);
-        co_await client_->async_send_command(joined);
+    // The device drops everything after 255 chars of a POST line, so the
+    // '&'-joined body goes out in chunks (sequentially; the device gate
+    // serializes them). A throwing chunk skips the later ones and the publishes.
+    const auto chunks = bridge::chunk_post_fragments(fragments);
+    if (!chunks.empty()) {
+        if (prepared.size() > 1) {
+            std::string joined;
+            for (const auto& c : chunks) joined += (joined.empty() ? "" : "&") + c;
+            myio::log("[{}] [broker to myIO] batch ({} cmd, {} POST) → {}",
+                      cfg_.server_id, prepared.size(), chunks.size(), joined);
+        }
+        for (const auto& chunk : chunks)
+            co_await client_->async_send_command(chunk);
     }
     // Publish optimistic state only after the POST returns. If the POST threw,
     // we never get here (the worker catches it), so HA is not told about a state

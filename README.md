@@ -336,9 +336,11 @@ Zero extra requests reach the myIO devices: everything comes from the already ru
 When Home Assistant fires an action that touches several outputs at once (a scene, or an
 automation that turns on two lamps), it publishes several MQTT commands back-to-back. The bridge
 waits `coalesce_window_ms` after the first command so these siblings arrive and go out to the myIO
-device as **one** HTTP POST instead of several. This matters because the myIO Ethernet module
-(W5100) has only 4 TCP sockets — bursts of rapid POSTs can exhaust them and make the web server
-unreachable for ~1 minute.
+device as **one** HTTP POST instead of several. This matters because before fw 3.12 the myIO
+device serves only ONE connection at a time on port 80; a concurrent one may be reset (hence the
+per-device request serialization and the command retry). The device drops everything after 255
+characters of a POST line, so a large batch is split on `&` boundaries into POSTs of at most 200
+characters.
 
 The window is a trade-off:
 
