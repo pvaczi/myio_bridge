@@ -20,7 +20,7 @@ struct PcaOutput {
     int         turn_on;            // turnON:  value when output is ON  (0–255)
     bool        is_pwm;             // pwm == 1 → brightness controllable
     int         timer_sec;          // motor auto-stop timer in seconds (0 = disabled)
-    bool        sensor_controlled;  // sensor != 0
+    bool        sensor_controlled;  // sensor 1..254 (255 = SUN is not a sensor)
     int         sensor_id;          // controlling sensor id (0 = none)
     int         sensor_on;          // sensorON threshold (×10 → °C or %)
     int         sensor_off;         // sensorOFF threshold (×10)

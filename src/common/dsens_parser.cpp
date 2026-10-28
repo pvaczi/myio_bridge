@@ -73,9 +73,9 @@ static void parse_relays(const json::object& obj, ServerState& state) {
         r.state             = int_or(*entry, "state") != 0;
         r.sensor_id         = int_or(*entry, "sensor");
         // "sensor": 0 = none, 255 = SUN (sunrise/sunset), 1..254 = sensor id.
-        // 255 is still counted as controlled: the lighting device has outputs
-        // with sensor=255, so the classification is deliberately unchanged.
-        r.sensor_controlled = r.sensor_id != 0;
+        // Only 1..254 is a real sensor; 255 (SUN) is an ordinary output that users also
+        // switch manually, so it is NOT sensor-controlled (_sensor_id still shows it).
+        r.sensor_controlled = r.sensor_id >= 1 && r.sensor_id <= 254;
         r.sensor_on         = int_or(*entry, "sensorON");
         r.sensor_off        = int_or(*entry, "sensorOFF");
         state.relay_outputs.push_back(std::move(r));
@@ -102,7 +102,7 @@ static void parse_pca(const json::object& obj, ServerState& state) {
         p.is_pwm            = bool_flag(*entry, "pwm");
         p.timer_sec         = int_or(*entry, "timer");
         p.sensor_id         = int_or(*entry, "sensor");
-        p.sensor_controlled = p.sensor_id != 0;
+        p.sensor_controlled = p.sensor_id >= 1 && p.sensor_id <= 254;
         p.sensor_on         = int_or(*entry, "sensorON");
         p.sensor_off        = int_or(*entry, "sensorOFF");
         state.pca_outputs.push_back(std::move(p));
@@ -127,7 +127,7 @@ static void parse_pwm(const json::object& obj, ServerState& state) {
         p.turn_off          = int_or(*entry, "turnOFF");
         p.turn_on           = int_or(*entry, "turnON", 255);
         p.sensor_id         = int_or(*entry, "sensor");
-        p.sensor_controlled = p.sensor_id != 0;
+        p.sensor_controlled = p.sensor_id >= 1 && p.sensor_id <= 254;
         p.sensor_on         = int_or(*entry, "sensorON");
         p.sensor_off        = int_or(*entry, "sensorOFF");
         state.pwm_outputs.push_back(std::move(p));

@@ -274,7 +274,7 @@ static void write_json(std::ostream& out, const json::value& jv, int indent = 0)
 // ── JSON output builders ──────────────────────────────────────────────────────
 // Diagnostic fields prefixed with _ are kept only when they help configuration:
 //   _pwm            – clarifies why type was set to "light"
-//   _sensor_id      – clarifies why type was set to "sensor_output"
+//   _sensor_id      – sensor activator (1..254 = sensor, 255 = SUN); type is sensor_output only for 1..254
 //   _protection_index – links cover output to its protection pair
 // Removed: _state, _turn_off, _turn_on, _sensor_on, _sensor_off,
 //          _temperature_c, _humidity_pct, _energy_kwh, _power_kw,
@@ -293,7 +293,7 @@ static json::object make_pca_entry(const myio::PcaOutput& p,
     o["enabled"] = false;
     // Keep only diagnostics that aid configuration decisions
     if (p.is_pwm)            o["_pwm"]       = true;
-    if (p.sensor_controlled) o["_sensor_id"] = p.sensor_id;
+    if (p.sensor_id != 0)         o["_sensor_id"] = p.sensor_id;
     return o;
 }
 
@@ -306,7 +306,7 @@ static json::object make_relay_entry(const myio::RelayOutput& r,
                      ? (r.sensor_controlled ? "sensor_output" : "switch")
                      : type_override;
     o["enabled"] = false;
-    if (r.sensor_controlled) o["_sensor_id"] = r.sensor_id;
+    if (r.sensor_id != 0)         o["_sensor_id"] = r.sensor_id;
     return o;
 }
 
@@ -316,7 +316,7 @@ static json::object make_pwm_entry(const myio::PwmOutput& p) {
     o["name"]    = p.name;
     o["type"]    = p.sensor_controlled ? "sensor_output" : "light";
     o["enabled"] = false;
-    if (p.sensor_controlled) o["_sensor_id"] = p.sensor_id;
+    if (p.sensor_id != 0)         o["_sensor_id"] = p.sensor_id;
     return o;
 }
 

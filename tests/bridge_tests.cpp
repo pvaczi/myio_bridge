@@ -395,14 +395,14 @@ void test_unreadable_outputs_skipped() {
 
 void test_sensor_activator_classification() {
     // sensor: 0 = none, 255 = SUN, 1..254 = sensor id. The lighting device has
-    // outputs with sensor=255, so 255 stays classified as sensor-controlled.
+    // 255 is an ordinary (manually switchable) output: not sensor-controlled.
     const auto st = myio::DSensOutParser::parse(
         R"({"PCA":{"0":{"id":2001,"state":0,"sensor":0},"1":{"id":2002,"state":0,"sensor":7},)"
         R"("2":{"id":2003,"state":0,"sensor":255}}})", "t");
     CHECK(st.pca_outputs.size() == 3);
     CHECK(!st.pca_outputs[0].sensor_controlled);
     CHECK(st.pca_outputs[1].sensor_controlled);
-    CHECK(st.pca_outputs[2].sensor_controlled && st.pca_outputs[2].sensor_id == 255);
+    CHECK(!st.pca_outputs[2].sensor_controlled && st.pca_outputs[2].sensor_id == 255);
 }
 
 void test_reserved_server_id() {
