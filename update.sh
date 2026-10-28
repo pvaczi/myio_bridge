@@ -7,8 +7,6 @@ BIN_DIR="$INSTALL_DIR/bin"
 ASSET_NAME="myio-bridge-linux-x86_64.tar.gz"
 MIN_FREE_KB=20000   # ~20 MB szabad hely kell, mielőtt bármihez hozzányúlnánk
 
-[ -f /etc/myio-bridge.env ] && source /etc/myio-bridge.env
-
 # --- preflight: szabad lemezhely ---
 # A csonka-letöltés csapda gyökéroka: ha megtelt a rootfs, a `curl | tar` egy
 # fél binárist ír ki, ami SIGSEGV-vel száll el. Ezért ELŐBB ellenőrzünk, és ha
@@ -24,20 +22,13 @@ fi
 systemctl is-active --quiet myio-bridge && BRIDGE_WAS_RUNNING=1 || BRIDGE_WAS_RUNNING=0
 
 # --- forrás frissítése ---
-# A token env-alapú http.extraheader-ként megy át (az actions/checkout mintája),
-# így SOHA nem kerül a .git/config-ba — a tokenes remote-URL plaintextben őrizné.
-git_auth() {
-    GIT_CONFIG_COUNT=1 \
-    GIT_CONFIG_KEY_0="http.extraheader" \
-    GIT_CONFIG_VALUE_0="Authorization: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)" \
-    git "$@"
-}
+# A repó publikus: a clone/pull és a release-letöltés token nélkül megy.
 if [[ -d "$SRC_DIR/.git" ]]; then
     # Korábbi telepítések tokenes URL-jének tisztítása.
     git -C "$SRC_DIR" remote set-url origin "https://github.com/${REPO}.git"
-    git_auth -C "$SRC_DIR" pull
+    git -C "$SRC_DIR" pull
 else
-    git_auth clone "https://github.com/${REPO}.git" "$SRC_DIR"
+    git clone "https://github.com/${REPO}.git" "$SRC_DIR"
 fi
 
 # --- web UI frissítése ---
@@ -58,7 +49,7 @@ if [ "$TMP_AVAIL_KB" -lt "$MIN_FREE_KB" ]; then
     exit 1
 fi
 
-RELEASE_INFO=$(curl -sf -H "Authorization: Bearer $GITHUB_TOKEN" \
+RELEASE_INFO=$(curl -sf \
   "https://api.github.com/repos/$REPO/releases/latest" \
   | python3 -c "
 import sys, json
@@ -74,8 +65,7 @@ if [ -z "$ASSET_ID" ]; then
     exit 1
 fi
 
-curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
-     -H "Accept: application/octet-stream" \
+curl -fsSL -H "Accept: application/octet-stream" \
      "https://api.github.com/repos/$REPO/releases/assets/$ASSET_ID" \
      -o "$TMP/rel.tgz"
 

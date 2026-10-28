@@ -412,17 +412,11 @@ Pre-built static binaries are available on the [Releases](../../releases) page. 
 
 - Debian Trixie or Ubuntu 24.04+
 - `git` (installed by `install.sh` if missing)
-- A GitHub PAT (classic) with `repo` scope — needed to download release assets from a private repository
 
 ### First-time install
 
 ```bash
-# Set the token
-export GITHUB_TOKEN=ghp_...
-
-# Clone the repo (do NOT embed the token in the URL — it would persist in .git/config)
-git -c http.extraheader="Authorization: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)" \
-    clone https://github.com/pvaczi/myio_bridge /opt/myio-src
+git clone https://github.com/pvaczi/myio_bridge /opt/myio-src
 
 # Run the installer as root
 bash /opt/myio-src/install.sh
@@ -433,7 +427,6 @@ bash /opt/myio-src/install.sh
 - Installs `curl`, `git` and `python3-venv`
 - Creates a `myio` system user
 - Creates `/opt/myio-bridge/{bin,data}`
-- Writes the token to `/etc/myio-bridge.env` (mode 600)
 - Copies the Web UI and sets up a Python venv (pinned deps from `web/requirements.txt`)
 - Generates a Web UI password into `/opt/myio-bridge/data/webui_password` (login: `admin`)
 - Copies `bridge.json` and `discovery_input.json` (only if not already present — existing configs are preserved) and restricts them to mode 600 (they contain the myIO passwords in plain text)
@@ -453,7 +446,7 @@ This does everything in one step, with several safety nets added after a disk-fu
 incident produced a truncated binary in production:
 
 1. **Preflight**: checks free space on both the install dir and the temp dir before touching anything
-2. `git pull` on `/opt/myio-src` (or clones it if missing) — the token is passed as an ephemeral `http.extraheader`, never stored in `.git/config`
+2. `git pull` on `/opt/myio-src` (or clones it if missing)
 3. Copies the updated Web UI files to `/opt/myio-bridge/web/` and restarts `myio-web`
 4. Downloads the latest release archive **to a temp dir**, then verifies it before the swap: sha256 digest against the GitHub API (when available), `tar -tzf` archive integrity, and a `--version` run of the extracted binary
 5. Atomically swaps the binaries with `.bak` backups; on any install or startup failure it rolls back to the backups and restarts the old version

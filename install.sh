@@ -11,13 +11,6 @@ error() { echo "[ERROR] $*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || error "Root jogosultság szükséges (sudo bash install.sh)."
 
-# --- token ---
-[[ -f /etc/myio-bridge.env ]] && source /etc/myio-bridge.env
-if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-    read -rsp "GitHub PAT: " GITHUB_TOKEN; echo
-fi
-[[ -n "${GITHUB_TOKEN:-}" ]] || error "GITHUB_TOKEN nem lehet üres."
-
 # --- deps ---
 info "Függőségek telepítése..."
 apt-get update -qq
@@ -37,15 +30,6 @@ ok "systemd-journal csoport: $SERVICE_USER"
 # --- directories ---
 mkdir -p "$INSTALL_DIR"/{bin,data}
 ok "Könyvtárak: $INSTALL_DIR"
-
-# --- env file ---
-if [[ ! -f /etc/myio-bridge.env ]]; then
-    printf 'GITHUB_TOKEN=%s\n' "$GITHUB_TOKEN" > /etc/myio-bridge.env
-    chmod 600 /etc/myio-bridge.env
-    ok "Env fájl létrehozva: /etc/myio-bridge.env"
-else
-    info "Env fájl már létezik, megtartva."
-fi
 
 # --- web UI ---
 info "Web UI másolása..."
