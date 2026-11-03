@@ -131,6 +131,9 @@ static CoverEndpoint parse_endpoint(const json::object& o, std::string_view ctx)
 static ServerConfig parse_server(const json::object& o) {
     ServerConfig sc;
     sc.server_id         = str_or(o, "id");
+    // "mqtt" would overwrite data/status/mqtt.json, "bridge" the <prefix>/bridge/... topics.
+    if (sc.server_id == "mqtt" || sc.server_id == "bridge")
+        throw std::runtime_error(std::format("bridge.json: server id '{}' is reserved", sc.server_id));
     sc.host              = str_or(o, "host");
     sc.user              = str_or(o, "user",     "admin");
     sc.password          = str_or(o, "password", "admin");
