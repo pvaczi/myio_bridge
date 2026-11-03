@@ -69,6 +69,11 @@ net::awaitable<void> AsyncHttpClient::lock_gate() {
 // ── Internal GET ──────────────────────────────────────────────────────────────
 
 net::awaitable<std::string> AsyncHttpClient::do_get(std::string_view target) {
+    const auto raw = co_await do_get_raw(target);
+    co_return bridge::extract_json_body(raw, cfg_.host);
+}
+
+net::awaitable<std::string> AsyncHttpClient::do_get_raw(std::string_view target) {
     auto ex = co_await net::this_coro::executor;
     beast::tcp_stream stream(ex);
 
@@ -103,7 +108,7 @@ net::awaitable<std::string> AsyncHttpClient::do_get(std::string_view target) {
     beast::error_code sec;
     stream.socket().shutdown(tcp::socket::shutdown_both, sec);
 
-    co_return bridge::extract_json_body(raw, cfg_.host);
+    co_return raw;
 }
 
 // ── Internal POST ─────────────────────────────────────────────────────────────
@@ -211,6 +216,13 @@ net::awaitable<ServerState> AsyncHttpClient::async_poll() {
     GateUnlock unlock{gate_};
     const auto json_body = co_await do_get("/sens_out.json");
     co_return DSensOutParser::parse(json_body, cfg_.server_id);
+}
+
+net::awaitable<std::string> AsyncHttpClient::async_get_page(std::string path) {
+    co_await lock_gate();
+    GateUnlock unlock{gate_};
+    const auto raw = co_await do_get_raw(path);
+    co_return bridge::extract_http_body(raw, cfg_.host);
 }
 
 net::awaitable<void> AsyncHttpClient::async_send_command(std::string post_body) {

@@ -148,6 +148,16 @@ private:
     // last successfully published value (or nothing was published yet).
     net::awaitable<void> update_availability(bool online);
 
+    // Read-only thermostat thresholds (min_temp_ON / max_temp_OFF) from GET /output.
+    // One request per trigger (startup, resync) — never periodic, never retried;
+    // a failure is logged once per distinct message and does not touch the
+    // availability or the poll error counters. Publishes the sensors' discovery
+    // (only when at least one output matches) and their changed states.
+    net::awaitable<void> fetch_thresholds();
+    // (Re)sends the discovery of the known threshold sensors; failures are logged.
+    net::awaitable<void> publish_threshold_discovery();
+    std::string output_name(OutputKind kind, int id) const;
+
     config::ServerConfig                cfg_;
     std::string                         topic_prefix_;
     std::shared_ptr<ha::IHAPublisher>   publisher_;
@@ -188,8 +198,18 @@ private:
     // Covers whose retained state was seeded ("stopped"/50) on the first discovery.
     std::unordered_set<std::string> seeded_covers_;
 
+    // Thermostat thresholds: outputs with a temperature sensor assigned, from the
+    // last successful GET /output. thresholds_pending_ = fetch at the next
+    // successful poll (set at startup and by schedule_resync).
+    bool                                  thresholds_pending_ = true;
+    std::vector<ThermostatThreshold>      thresholds_;
+    std::unordered_set<int>               thresholds_discovered_;  // threshold_key() with discovery published
+    std::unordered_map<int, int>          last_thr_on_;            // threshold_key() → last published raw
+    std::unordered_map<int, int>          last_thr_off_;
+    std::string                           last_thr_error_;         // last logged fetch error ("" = none)
+
     std::string last_poll_error_;
-    bool        syncing_ = false;   // true during startup/resync poll — tags log lines as [startup sync]
+    bool        syncing_ = false;  // true during startup/resync poll — tags log lines as [startup sync]
 
     // Poll diagnostics (published as the retained diag JSON, see ServerDiag).
     // consecutive_errors_ also drives the poll backoff and the offline threshold.

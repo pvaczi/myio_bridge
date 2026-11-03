@@ -585,6 +585,11 @@ net::awaitable<void> ServerBridge::publish_discovery() {
     for (const auto d : kServerDiagEntities)
         co_await publish(server_diag_discovery_topic(s, d), make_server_diag_discovery(ctx, d));
 
+    // Threshold sensors: only once a GET /output found at least one (HA birth /
+    // reconnect re-sends); the first fetch publishes them itself.
+    if (!thresholds_.empty())
+        co_await publish_threshold_discovery();
+
     if (failures > 0)
         myio::log(stderr, "[{}] Discovery: {} publish(es) failed, first: {}",
                   cfg_.server_id, failures, first_error);
@@ -738,10 +743,151 @@ void ServerBridge::schedule_resync() {
     for (auto& [id, v] : last_pwm_state_)   v = -1;
     for (auto& [id, v] : last_sensor_val_)        v = std::numeric_limits<double>::max();
     for (auto& [id, v] : last_sensor_logged_val_) v = std::numeric_limits<double>::max();
+    last_thr_on_.clear();          // thresholds: refetched (GET /output) and republished
+    last_thr_off_.clear();
+    thresholds_pending_ = true;
     published_available_.reset();  // republish the server availability too
     diag_force_ = true;            // ... and the diag JSON
     syncing_ = true;
     myio::log("[{}] State resync scheduled.", cfg_.server_id);
+}
+
+// ── Thermostat thresholds ─────────────────────────────────────────────────────
+
+// Cache/bookkeeping key of an output: relay ids (1..100) and PCA ids (2001..) never
+// overlap, but the kind is encoded anyway so a decoded key names its output.
+static int threshold_key(OutputKind kind, int id) {
+    return static_cast<int>(kind) * 100000 + id;
+}
+
+std::string ServerBridge::output_name(OutputKind kind, int id) const {
+    if (kind == OutputKind::Relay) {
+        for (const auto& e : cfg_.relays) if (e.id == id) return e.name;
+    } else if (kind == OutputKind::Pca) {
+        for (const auto& e : cfg_.pca) if (e.id == id) return e.name;
+    }
+    return {};
+}
+
+net::awaitable<void> ServerBridge::publish_threshold_discovery() {
+    // Copy: a fetch may replace thresholds_ while this awaits the publishes.
+    const auto list = thresholds_;
+    const auto ctx  = discovery_context();
+    int         failures = 0;
+    std::string first_error;
+    for (const auto& t : list) {
+        thresholds_discovered_.insert(threshold_key(t.kind, t.id));
+        const auto name = output_name(t.kind, t.id);
+        for (const auto which : {ThresholdKind::On, ThresholdKind::Off}) {
+            try {
+                co_await publisher_->async_publish(
+                    threshold_discovery_topic(cfg_.server_id, t.kind, t.id, which),
+                    make_threshold_discovery(ctx, t.kind, t.id, name, which), true);
+            } catch (const std::exception& e) {
+                if (failures++ == 0) first_error = myio::short_what(e);
+            }
+        }
+    }
+    if (failures > 0)
+        myio::log(stderr, "[{}] Threshold discovery: {} publish(es) failed, first: {}",
+                  cfg_.server_id, failures, first_error);
+}
+
+net::awaitable<void> ServerBridge::fetch_thresholds() {
+    thresholds_pending_ = false;   // one attempt per trigger; a resync sets it again
+    const auto ex = co_await net::this_coro::executor;
+
+    std::optional<std::vector<ThermostatThreshold>> mapped;
+    std::string error;
+    try {
+        const auto html = co_await client_->async_get_page("/output");
+        std::vector<int> relay_ids, pca_ids;
+        for (const auto& e : cfg_.relays)
+            if (e.enabled && !is_cover_endpoint(cfg_.covers, OutputKind::Relay, e.id))
+                relay_ids.push_back(e.id);
+        for (const auto& e : cfg_.pca)
+            if (e.enabled && !is_cover_endpoint(cfg_.covers, OutputKind::Pca, e.id))
+                pca_ids.push_back(e.id);
+        mapped = map_thermostat_thresholds(html, relay_ids, pca_ids);
+        if (!mapped) error = "no thermostat arrays in the /output page";
+    } catch (const std::exception& e) {
+        error = myio::short_what(e);
+    }
+    if (!mapped) {
+        // Not a poll error: availability and the error counters stay untouched.
+        if (error != last_thr_error_)
+            myio::log(stderr, "[{}] Thermostat thresholds unavailable: {}", cfg_.server_id, error);
+        last_thr_error_ = error;
+        co_return;
+    }
+    last_thr_error_.clear();
+    thresholds_ = std::move(*mapped);
+
+    std::unordered_set<int> matched;
+    for (const auto& t : thresholds_) matched.insert(threshold_key(t.kind, t.id));
+    if (!thresholds_.empty())
+        myio::log("[{}] Thermostat thresholds: {} output(s) with a temperature sensor",
+                  cfg_.server_id, thresholds_.size());
+
+    // Stale threshold sensors (thermostat removed, output disabled): clear their
+    // discovery. With matches, every other configured output is cleared too (also
+    // covers a previous run); without, only what this run published.
+    std::vector<std::pair<OutputKind, int>> stale;
+    if (!thresholds_.empty()) {
+        for (const auto& e : cfg_.relays)
+            if (!matched.contains(threshold_key(OutputKind::Relay, e.id)))
+                stale.emplace_back(OutputKind::Relay, e.id);
+        for (const auto& e : cfg_.pca)
+            if (!matched.contains(threshold_key(OutputKind::Pca, e.id)))
+                stale.emplace_back(OutputKind::Pca, e.id);
+    } else {
+        for (const int key : thresholds_discovered_)
+            stale.emplace_back(static_cast<OutputKind>(key / 100000), key % 100000);
+    }
+    std::vector<std::function<net::awaitable<void>()>> tasks;
+    for (const auto& [kind, id] : stale) {
+        thresholds_discovered_.erase(threshold_key(kind, id));
+        last_thr_on_.erase(threshold_key(kind, id));
+        last_thr_off_.erase(threshold_key(kind, id));
+        for (const auto which : {ThresholdKind::On, ThresholdKind::Off}) {
+            tasks.push_back([this, kind = kind, id = id, which]() -> net::awaitable<void> {
+                co_await publisher_->async_publish(
+                    threshold_discovery_topic(cfg_.server_id, kind, id, which), "", true);
+            });
+        }
+    }
+    try {
+        co_await run_concurrently(ex, std::move(tasks));
+    } catch (const std::exception& e) {
+        myio::log(stderr, "[{}] Threshold discovery clear failed: {}",
+                  cfg_.server_id, myio::short_what(e));
+    }
+    if (thresholds_.empty()) co_return;
+
+    co_await publish_threshold_discovery();
+
+    // States: published only when changed (cache updated after the publish succeeded).
+    std::vector<std::function<net::awaitable<void>()>> pending;
+    for (const auto& t : thresholds_) {
+        const int key = threshold_key(t.kind, t.id);
+        auto add = [&](ThresholdKind which, int raw, std::unordered_map<int, int>& cache) {
+            if (const auto it = cache.find(key); it != cache.end() && it->second == raw) return;
+            pending.push_back([this, t, key, which, raw, &cache]() -> net::awaitable<void> {
+                co_await publisher_->async_publish(
+                    threshold_state_topic(topic_prefix_, cfg_.server_id, t.kind, t.id, which),
+                    format_tenths(raw), true);
+                cache[key] = raw;
+            });
+        };
+        add(ThresholdKind::On,  t.on_raw,  last_thr_on_);
+        add(ThresholdKind::Off, t.off_raw, last_thr_off_);
+    }
+    try {
+        co_await run_concurrently(ex, std::move(pending));
+    } catch (const std::exception& e) {
+        myio::log(stderr, "[{}] Threshold state publish error: {}",
+                  cfg_.server_id, myio::short_what(e));
+    }
 }
 
 // ── Availability ──────────────────────────────────────────────────────────────
@@ -1120,6 +1266,11 @@ net::awaitable<void> ServerBridge::poll_loop() {
                           cfg_.server_id, last_info_error_);
             }
         }
+
+        // Thermostat thresholds: one GET /output after the first successful poll
+        // and after every resync (also set on a broker reconnect) — never periodic.
+        if (!caught && thresholds_pending_)
+            co_await fetch_thresholds();
 
         co_await update_diag(diag_error_changed);
 

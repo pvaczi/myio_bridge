@@ -33,11 +33,20 @@ public:
     [[nodiscard]]
     net::awaitable<ServerState> async_poll() override;
 
+    // GET <path> → raw HTTP body (HTML pages such as /output)
+    [[nodiscard]]
+    net::awaitable<std::string> async_get_page(std::string path) override;
+
     // POST /info.json – sends command string to myIO
     // Example body: "PCA_ON=2005" or "PCA_OFF=2022&PCA_ON=2023"
     net::awaitable<void> async_send_command(std::string post_body) override;
 
 private:
+    // GET → the raw response (status line, headers, body), unparsed.
+    [[nodiscard]]
+    net::awaitable<std::string> do_get_raw(std::string_view target);
+
+    // GET → the JSON object text of the response body.
     [[nodiscard]]
     net::awaitable<std::string> do_get(std::string_view target);
 

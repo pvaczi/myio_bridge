@@ -24,6 +24,13 @@ public:
     [[nodiscard]]
     virtual net::awaitable<ServerState> async_poll() = 0;
 
+    // GETs an arbitrary page (e.g. "/output") and returns its raw HTTP body,
+    // without any JSON extraction. Throws on a transport error, a non-2xx
+    // status or a missing header block. Takes the same device gate as every
+    // other request; never retried.
+    [[nodiscard]]
+    virtual net::awaitable<std::string> async_get_page(std::string path) = 0;
+
     // Sends an HTTP POST command to the server.
     // Example: "PCA_ON=2005", "r_OFF=3", "PCA_OFF=2022&PCA_ON=2023"
     virtual net::awaitable<void> async_send_command(std::string post_body) = 0;

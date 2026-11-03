@@ -74,6 +74,12 @@ std::optional<int> parse_http_status(std::string_view raw);
 // as a credentials error, otherwise on a missing header block or JSON.
 std::string extract_json_body(const std::string& raw, std::string_view host);
 
+// Body of a raw GET response, verbatim (no JSON extraction) — for the HTML pages.
+// Same header handling as extract_json_body: CRLF and bare-LF terminators.
+// Throws std::runtime_error: HTTP 401 as a credentials error, any other non-2xx
+// status, a missing header block.
+std::string extract_http_body(const std::string& raw, std::string_view host);
+
 // The device drops everything after 255 characters of a POST line. Joins the
 // '&'-separated fragments into chunks of at most max_len characters, never
 // splitting a fragment; a fragment longer than max_len goes alone. Empty
@@ -116,6 +122,48 @@ struct SensorClass {
 };
 SensorClass sensor_class(int id);
 
+// ── Thermostat thresholds (read-only, from the GET /output page) ──────────────
+// The heating controller's /output page carries the per-output thermostat
+// settings as JavaScript arrays (values in tenths of °C), e.g.
+//   var thermoActivator=[53,40,...];  var min_temp_ON=[229,...];  var max_temp_OFF=[225,...];
+// for the relays (index = relay id - 1) and the same three with a "PCA_" prefix for
+// the PCA outputs (index = PCA id - 2001). activator 0 = no sensor, 1..99 = a
+// temperature sensor, >= 100 = a humidity sensor (not a temperature threshold).
+
+// The integer array of `var <name>=[...]` in an HTML/JS text (whitespace tolerant).
+// The name must be the whole identifier: "min_temp_ON" does not match
+// "PCA_min_temp_ON". nullopt = no such declaration, or its elements are not integers.
+std::optional<std::vector<int>> parse_js_int_array(std::string_view html, std::string_view name);
+
+struct ThermostatThreshold {
+    OutputKind kind;       // Relay or Pca
+    int        id;         // the output's id as configured (relay 1.., PCA 2001..)
+    int        activator;  // sensor id (1..99)
+    int        on_raw;     // min_temp_ON,  tenths of °C
+    int        off_raw;    // max_temp_OFF, tenths of °C
+};
+
+// The thresholds of the given outputs that have a temperature sensor assigned
+// (activator 1..99), relays first, each group in the order of the given ids.
+// Ids outside the arrays are skipped. nullopt = the page carries none of the
+// array triplets (not a thermostat page); an empty vector = parsed, no match.
+std::optional<std::vector<ThermostatThreshold>>
+map_thermostat_thresholds(std::string_view html,
+                          const std::vector<int>& relay_ids,
+                          const std::vector<int>& pca_ids);
+
+// Tenths of °C as the HA state text with one decimal: 229 → "22.9", -5 → "-0.5".
+std::string format_tenths(int tenths);
+
+enum class ThresholdKind { On, Off };   // min_temp_ON / max_temp_OFF
+
+// "<prefix>/<server>/threshold/<relay|pca>/<id>/<on|off>" (retained state)
+std::string threshold_state_topic(std::string_view prefix, std::string_view server_id,
+                                  OutputKind kind, int id, ThresholdKind which);
+// "homeassistant/sensor/myio_<server>_<relay|pca>_<id>_thr_<on|off>/config"
+std::string threshold_discovery_topic(std::string_view server_id, OutputKind kind, int id,
+                                      ThresholdKind which);
+
 // ── Discovery common blocks ───────────────────────────────────────────────────
 
 inline constexpr std::string_view kBridgeDeviceId = "myio_bridge";
@@ -144,6 +192,13 @@ boost::json::object bridge_device_block(std::string_view bridge_version);
 // default_entity_id = "<component>.<object_id>" to an entity's discovery config.
 void add_entity_common(boost::json::object& o, const DiscoveryContext& ctx,
                        std::string_view component, std::string_view object_id);
+
+// Thermostat threshold sensor (see "Thermostat thresholds" above): read-only,
+// "<output name> bekapcsolási|kikapcsolási küszöb", device_class temperature, °C,
+// entity_category diagnostic; no command_topic, no state_class.
+// unique_id = myio_<server>_<relay|pca>_<id>_thr_<on|off>.
+std::string make_threshold_discovery(const DiscoveryContext& ctx, OutputKind kind, int id,
+                                     std::string_view output_name, ThresholdKind which);
 
 // Bridge connectivity binary_sensor (diagnostic) — registers the bridge device.
 std::string bridge_status_discovery_topic();

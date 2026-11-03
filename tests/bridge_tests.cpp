@@ -809,6 +809,188 @@ void test_sd_notify() {
     CHECK(!sdnotify::watchdog_period("60000000", "x", 42));
 }
 
+// Trimmed copy of the heating controller's GET /output page (fw 3.7.5.1): the six
+// arrays of the real page, the PCA ones listed first and between other JS.
+constexpr const char* kOutputPage =
+    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
+    "<html><script>\n"
+    " var other=[1,2,3];\n"
+    " var PCA_thermoActivator=[0,0,0,0,0,0,0,0,0,55,45,53,2,62,36,37,1,40,38,39,60,58,59,63,0,0,0,0,0,0,0,0];\n"
+    " var PCA_min_temp_ON=[0,0,0,0,0,0,0,0,0,197,216,225,244,244,244,244,244,223,244,244,225,225,218,218,150,0,0,0,0,0,0,0];\n"
+    " var PCA_max_temp_OFF=[0,0,0,0,0,0,0,0,0,203,220,229,246,246,246,246,246,227,246,246,229,229,222,222,148,0,0,0,0,0,0,0];\n"
+    " var thermoActivator=[53,40,43,45,54,0,61,0,57,49,0,0,0,0,0,0];\n"
+    " var min_temp_ON=[229,227,222,220,227,227,227,227,227,150,0,0,0,0,0,0];\n"
+    " var max_temp_OFF=[225,223,218,216,223,223,223,223,223,148,0,0,0,0,0,0];\n"
+    "</script></html>\n";
+
+void test_parse_js_int_array() {
+    using bridge::parse_js_int_array;
+    const std::string_view page = kOutputPage;
+
+    const auto relay_on = parse_js_int_array(page, "min_temp_ON");
+    CHECK(relay_on && relay_on->size() == 16 && (*relay_on)[0] == 229 && (*relay_on)[9] == 150);
+    const auto pca_on = parse_js_int_array(page, "PCA_min_temp_ON");
+    CHECK(pca_on && pca_on->size() == 32 && (*pca_on)[9] == 197 && (*pca_on)[24] == 150);
+
+    // The unprefixed name must not match the PCA_ one, whichever comes first.
+    const std::string_view only_pca = "var PCA_min_temp_ON=[1,2,3];";
+    CHECK(!parse_js_int_array(only_pca, "min_temp_ON"));
+    CHECK(parse_js_int_array(only_pca, "PCA_min_temp_ON") == std::vector<int>({1, 2, 3}));
+    const auto act = parse_js_int_array(page, "thermoActivator");
+    CHECK(act && act->size() == 16 && (*act)[0] == 53 && (*act)[6] == 61);
+    const auto pca_act = parse_js_int_array(page, "PCA_thermoActivator");
+    CHECK(pca_act && pca_act->size() == 32 && (*pca_act)[9] == 55);
+
+    // Whitespace tolerant, negative numbers, empty array
+    CHECK(parse_js_int_array("var  a \t=\n[ 1 , -2,3 ] ;", "a") == std::vector<int>({1, -2, 3}));
+    CHECK(parse_js_int_array("x;\nvar a=[];", "a") == std::vector<int>{});
+
+    // Not a `var` declaration, or a longer identifier
+    CHECK(!parse_js_int_array("a=[1,2];", "a"));
+    CHECK(!parse_js_int_array("let a=[1,2];", "a"));
+    CHECK(!parse_js_int_array("xvar a=[1,2];", "a"));
+    CHECK(!parse_js_int_array("var a2=[1,2];", "a"));
+    CHECK(!parse_js_int_array("var a=5;", "a"));
+    CHECK(!parse_js_int_array(page, "no_such_array"));
+    CHECK(!parse_js_int_array("", "a"));
+    CHECK(!parse_js_int_array(page, ""));
+
+    // Malformed array bodies
+    CHECK(!parse_js_int_array("var a=[1,x,3];", "a"));
+    CHECK(!parse_js_int_array("var a=[1,2", "a"));
+    CHECK(!parse_js_int_array("var a=[1,2,];", "a"));
+    CHECK(!parse_js_int_array("var a=[1 2];", "a"));
+    CHECK(!parse_js_int_array("var a=[", "a"));
+}
+
+void test_thermostat_mapping() {
+    using bridge::OutputKind;
+    using bridge::map_thermostat_thresholds;
+
+    const std::string page = kOutputPage;
+    const auto m = map_thermostat_thresholds(page, {1, 2, 6, 7, 8, 10, 11, 17, 0, -3}, {2001, 2010, 2017, 2033, 2000});
+    CHECK(m.has_value());
+    if (!m) return;
+
+    auto find = [&](OutputKind kind, int id) -> const bridge::ThermostatThreshold* {
+        for (const auto& t : *m) if (t.kind == kind && t.id == id) return &t;
+        return nullptr;
+    };
+    // Relay id N → array index N-1: id 1 → index 0 (activator 53, 229/225)
+    const auto* r1 = find(OutputKind::Relay, 1);
+    CHECK(r1 && r1->activator == 53 && r1->on_raw == 229 && r1->off_raw == 225);
+    const auto* r7 = find(OutputKind::Relay, 7);
+    CHECK(r7 && r7->activator == 61 && r7->on_raw == 227 && r7->off_raw == 223);
+    const auto* r10 = find(OutputKind::Relay, 10);
+    CHECK(r10 && r10->activator == 49 && r10->on_raw == 150 && r10->off_raw == 148);
+    // activator 0 (id 6 → index 5, id 8 → index 7, id 11 → index 10) skipped
+    CHECK(!find(OutputKind::Relay, 6) && !find(OutputKind::Relay, 8) && !find(OutputKind::Relay, 11));
+    // out of range / non-positive ids skipped
+    CHECK(!find(OutputKind::Relay, 17) && !find(OutputKind::Relay, 0) && !find(OutputKind::Relay, -3));
+
+    // PCA id 2010 → index 9: activator 55, 197 / 203
+    const auto* p10 = find(OutputKind::Pca, 2010);
+    CHECK(p10 && p10->activator == 55 && p10->on_raw == 197 && p10->off_raw == 203);
+    const auto* p17 = find(OutputKind::Pca, 2017);   // index 16: activator 1, the lowest sensor id
+    CHECK(p17 && p17->activator == 1 && p17->on_raw == 244 && p17->off_raw == 246);
+    CHECK(!find(OutputKind::Pca, 2001));             // activator 0
+    CHECK(!find(OutputKind::Pca, 2033) && !find(OutputKind::Pca, 2000));
+    CHECK(m->size() == 6);                           // relays 1, 2, 7, 10 + PCA 2010, 2017
+}
+
+void test_thermostat_mapping_edges() {
+    using bridge::OutputKind;
+    using bridge::map_thermostat_thresholds;
+
+    // Humidity activators (>= 100) are not temperature thresholds; 99 is still one.
+    const std::string page =
+        "var thermoActivator=[100,99,150,0];var min_temp_ON=[1,2,3,4];var max_temp_OFF=[5,6,7,8];";
+    const auto m = map_thermostat_thresholds(page, {1, 2, 3, 4}, {});
+    CHECK(m && m->size() == 1);
+    if (m && m->size() == 1) {
+        CHECK((*m)[0].id == 2 && (*m)[0].activator == 99 && (*m)[0].on_raw == 2 && (*m)[0].off_raw == 6);
+    }
+
+    // Only one group present: the other is skipped, not an error
+    const auto pca_only = map_thermostat_thresholds(
+        "var PCA_thermoActivator=[7];var PCA_min_temp_ON=[10];var PCA_max_temp_OFF=[20];",
+        {1}, {2001});
+    CHECK(pca_only && pca_only->size() == 1 && (*pca_only)[0].kind == OutputKind::Pca);
+
+    // Arrays of different lengths: the index must exist in all three
+    const auto uneven = map_thermostat_thresholds(
+        "var thermoActivator=[5,5];var min_temp_ON=[1,2];var max_temp_OFF=[3];", {1, 2}, {});
+    CHECK(uneven && uneven->size() == 1 && (*uneven)[0].id == 1);
+
+    // A page with the arrays but nothing configured / nothing matching: parsed, empty
+    const auto none = map_thermostat_thresholds(kOutputPage, {}, {});
+    CHECK(none && none->empty());
+
+    // Missing arrays: not a thermostat page; a triplet with one array missing counts as missing
+    CHECK(!map_thermostat_thresholds("<html>no arrays</html>", {1}, {2001}));
+    CHECK(!map_thermostat_thresholds("", {1}, {2001}));
+    CHECK(!map_thermostat_thresholds("var thermoActivator=[5];var min_temp_ON=[1];", {1}, {2001}));
+    // Malformed array: same as missing
+    CHECK(!map_thermostat_thresholds(
+        "var thermoActivator=[5,;var min_temp_ON=[1];var max_temp_OFF=[2];", {1}, {}));
+}
+
+void test_threshold_entities() {
+    using bridge::OutputKind;
+    using bridge::ThresholdKind;
+    namespace json = boost::json;
+
+    CHECK(bridge::format_tenths(229) == "22.9");
+    CHECK(bridge::format_tenths(150) == "15.0");
+    CHECK(bridge::format_tenths(0) == "0.0");
+    CHECK(bridge::format_tenths(7) == "0.7");
+    CHECK(bridge::format_tenths(-5) == "-0.5");
+    CHECK(bridge::format_tenths(-123) == "-12.3");
+
+    CHECK(bridge::threshold_state_topic("myio", "heating", OutputKind::Pca, 2010, ThresholdKind::On)
+          == "myio/heating/threshold/pca/2010/on");
+    CHECK(bridge::threshold_state_topic("myio", "heating", OutputKind::Relay, 3, ThresholdKind::Off)
+          == "myio/heating/threshold/relay/3/off");
+    CHECK(bridge::threshold_discovery_topic("heating", OutputKind::Pca, 2010, ThresholdKind::Off)
+          == "homeassistant/sensor/myio_heating_pca_2010_thr_off/config");
+
+    bridge::DiscoveryContext ctx;
+    ctx.prefix = "myio"; ctx.server_id = "heating"; ctx.host = "10.0.0.5"; ctx.bridge_version = "v1";
+    const auto on = json::parse(bridge::make_threshold_discovery(
+        ctx, OutputKind::Pca, 2010, "Nappali", ThresholdKind::On)).as_object();
+    CHECK(on.at("name").as_string() == "Nappali bekapcsolási küszöb");
+    CHECK(on.at("unique_id").as_string() == "myio_heating_pca_2010_thr_on");
+    CHECK(on.at("state_topic").as_string() == "myio/heating/threshold/pca/2010/on");
+    CHECK(on.at("device_class").as_string() == "temperature");
+    CHECK(on.at("unit_of_measurement").as_string() == "°C");
+    CHECK(on.at("entity_category").as_string() == "diagnostic");
+    CHECK(on.at("suggested_display_precision").as_int64() == 1);
+    CHECK(!on.contains("command_topic") && !on.contains("state_class"));
+    CHECK(on.contains("device") && on.contains("availability"));
+    const auto off = json::parse(bridge::make_threshold_discovery(
+        ctx, OutputKind::Relay, 3, "", ThresholdKind::Off)).as_object();
+    CHECK(off.at("name").as_string() == "myio_heating_relay_3 kikapcsolási küszöb");
+    CHECK(off.at("unique_id").as_string() == "myio_heating_relay_3_thr_off");
+}
+
+void test_extract_http_body() {
+    using bridge::extract_http_body;
+    auto throws = [](const std::string& raw) {
+        try { (void)extract_http_body(raw, "h"); } catch (const std::runtime_error&) { return true; }
+        return false;
+    };
+    CHECK(extract_http_body("HTTP/1.1 200 OK\r\nA: b\r\n\r\n<html>x\n\ny</html>", "h")
+          == "<html>x\n\ny</html>");
+    // Bare-LF headers: the body keeps its own blank lines
+    CHECK(extract_http_body("HTTP/1.1 200 OK\nA: b\n\n<html>x\r\n\r\ny</html>", "h")
+          == "<html>x\r\n\r\ny</html>");
+    CHECK(extract_http_body("HTTP/1.1 200 OK\r\n\r\n", "h").empty());
+    CHECK(throws("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic\r\n\r\n<html>no</html>"));
+    CHECK(throws("HTTP/1.1 404 Not Found\r\n\r\nnope"));
+    CHECK(throws("HTTP/1.1 200 OK\r\nno terminator"));
+    CHECK(throws(""));
+}
+
 } // namespace
 
 int main() {
@@ -841,6 +1023,11 @@ int main() {
     test_mqtt_status();
     test_discovery_merge();
     test_sd_notify();
+    test_parse_js_int_array();
+    test_thermostat_mapping();
+    test_thermostat_mapping_edges();
+    test_threshold_entities();
+    test_extract_http_body();
 
     std::printf("%d/%d checks passed\n", g_checks - g_failures, g_checks);
     return g_failures == 0 ? 0 : 1;

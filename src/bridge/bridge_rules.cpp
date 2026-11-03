@@ -177,6 +177,30 @@ std::string extract_json_body(const std::string& raw, std::string_view host) {
     return raw.substr(start, end - start + 1);
 }
 
+std::string extract_http_body(const std::string& raw, std::string_view host) {
+    const auto status = parse_http_status(raw);
+    if (status == 401)
+        throw std::runtime_error(
+            std::format("[{}] HTTP 401 – wrong username or password", host));
+
+    // End of the header block: \r\n\r\n or bare \n\n (whichever comes first).
+    const auto crlf = raw.find("\r\n\r\n");
+    const auto lf   = raw.find("\n\n");
+    std::size_t body_start = std::string::npos;
+    if (crlf != std::string::npos && (lf == std::string::npos || crlf < lf))
+        body_start = crlf + 4;
+    else if (lf != std::string::npos)
+        body_start = lf + 2;
+    if (body_start == std::string::npos)
+        throw std::runtime_error(
+            std::format("[{}] No HTTP header terminator found in response", host));
+
+    if (status && (*status < 200 || *status > 299))
+        throw std::runtime_error(std::format("[{}] HTTP {}", host, *status));
+
+    return raw.substr(body_start);
+}
+
 std::vector<std::string> chunk_post_fragments(const std::vector<std::string>& fragments,
                                               std::size_t max_len) {
     std::vector<std::string> chunks;
@@ -467,6 +491,152 @@ std::string make_server_diag_discovery(const DiscoveryContext& ctx, DiagEntity e
     if (!m.device_class.empty()) o["device_class"]        = m.device_class;
     if (!m.unit.empty())         o["unit_of_measurement"] = m.unit;
     if (!m.state_class.empty())  o["state_class"]         = m.state_class;
+    return json::serialize(o);
+}
+
+// ── Thermostat thresholds ─────────────────────────────────────────────────────
+
+namespace {
+
+constexpr bool is_ident_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+           c == '_' || c == '$';
+}
+
+std::size_t skip_spaces(std::string_view s, std::size_t i) {
+    while (i < s.size() && is_space(s[i])) ++i;
+    return i;
+}
+
+constexpr int kThermoMaxTempActivator = 99;   // 1..99 temperature sensor, >= 100 humidity
+constexpr int kFirstRelayId = 1;              // relay array index = id - 1
+constexpr int kFirstPcaId   = 2001;           // PCA array index   = id - 2001
+
+std::string_view kind_label(OutputKind kind) {
+    switch (kind) {
+        case OutputKind::Pca:   return "pca";
+        case OutputKind::Relay: return "relay";
+        case OutputKind::Pwm:   return "pwm";
+    }
+    return "";
+}
+
+std::string_view which_label(ThresholdKind which) {
+    return which == ThresholdKind::On ? "on" : "off";
+}
+
+} // namespace
+
+std::optional<std::vector<int>> parse_js_int_array(std::string_view html, std::string_view name) {
+    if (name.empty()) return std::nullopt;
+    for (auto pos = html.find(name); pos != std::string_view::npos;
+         pos = html.find(name, pos + 1)) {
+        // Before the name: whitespace, then the `var` keyword as a whole word.
+        // (A prefixed identifier such as PCA_<name> has '_' right before the name.)
+        auto b = pos;
+        while (b > 0 && is_space(html[b - 1])) --b;
+        if (b == pos || b < 3 || html.substr(b - 3, 3) != "var") continue;
+        if (b > 3 && is_ident_char(html[b - 4])) continue;
+
+        // After the name: the whole identifier, then `=` and `[`.
+        auto i = pos + name.size();
+        if (i < html.size() && is_ident_char(html[i])) continue;
+        i = skip_spaces(html, i);
+        if (i >= html.size() || html[i] != '=') continue;
+        i = skip_spaces(html, i + 1);
+        if (i >= html.size() || html[i] != '[') continue;
+        ++i;
+
+        // The declaration is found: any irregularity in it is a malformed array.
+        std::vector<int> values;
+        i = skip_spaces(html, i);
+        if (i < html.size() && html[i] == ']') return values;
+        while (true) {
+            i = skip_spaces(html, i);
+            int v = 0;
+            const char* first = html.data() + i;
+            const char* last  = html.data() + html.size();
+            const auto [ptr, ec] = std::from_chars(first, last, v);
+            if (ec != std::errc{}) return std::nullopt;
+            values.push_back(v);
+            i = skip_spaces(html, static_cast<std::size_t>(ptr - html.data()));
+            if (i >= html.size()) return std::nullopt;
+            if (html[i] == ']') return values;
+            if (html[i] != ',') return std::nullopt;
+            ++i;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::vector<ThermostatThreshold>>
+map_thermostat_thresholds(std::string_view html,
+                          const std::vector<int>& relay_ids,
+                          const std::vector<int>& pca_ids) {
+    std::vector<ThermostatThreshold> out;
+    bool any_group = false;
+
+    auto map_group = [&](OutputKind kind, int first_id, const std::vector<int>& ids,
+                         std::string_view act_name, std::string_view on_name,
+                         std::string_view off_name) {
+        const auto act = parse_js_int_array(html, act_name);
+        const auto on  = parse_js_int_array(html, on_name);
+        const auto off = parse_js_int_array(html, off_name);
+        if (!act || !on || !off) return;
+        any_group = true;
+        for (const int id : ids) {
+            const int idx = id - first_id;
+            if (idx < 0) continue;
+            const auto u = static_cast<std::size_t>(idx);
+            if (u >= act->size() || u >= on->size() || u >= off->size()) continue;
+            const int a = (*act)[u];
+            if (a < 1 || a > kThermoMaxTempActivator) continue;
+            out.push_back({kind, id, a, (*on)[u], (*off)[u]});
+        }
+    };
+
+    map_group(OutputKind::Relay, kFirstRelayId, relay_ids,
+              "thermoActivator", "min_temp_ON", "max_temp_OFF");
+    map_group(OutputKind::Pca, kFirstPcaId, pca_ids,
+              "PCA_thermoActivator", "PCA_min_temp_ON", "PCA_max_temp_OFF");
+
+    if (!any_group) return std::nullopt;
+    return out;
+}
+
+std::string format_tenths(int tenths) {
+    const long long v = tenths;
+    const long long a = v < 0 ? -v : v;
+    return std::format("{}{}.{}", v < 0 ? "-" : "", a / 10, a % 10);
+}
+
+std::string threshold_state_topic(std::string_view prefix, std::string_view server_id,
+                                  OutputKind kind, int id, ThresholdKind which) {
+    return std::format("{}/{}/threshold/{}/{}/{}", prefix, server_id,
+                       kind_label(kind), id, which_label(which));
+}
+
+std::string threshold_discovery_topic(std::string_view server_id, OutputKind kind, int id,
+                                      ThresholdKind which) {
+    return std::format("homeassistant/sensor/myio_{}_{}_{}_thr_{}/config", server_id,
+                       kind_label(kind), id, which_label(which));
+}
+
+std::string make_threshold_discovery(const DiscoveryContext& ctx, OutputKind kind, int id,
+                                     std::string_view output_name, ThresholdKind which) {
+    const std::string base = std::format("myio_{}_{}_{}", ctx.server_id, kind_label(kind), id);
+    const std::string uid  = std::format("{}_thr_{}", base, which_label(which));
+    const std::string_view label = which == ThresholdKind::On ? "bekapcsolási küszöb"
+                                                              : "kikapcsolási küszöb";
+    json::object o;
+    o["name"]                      = std::format("{} {}", output_name.empty() ? base : std::string(output_name), label);
+    o["unique_id"]                 = uid;
+    o["state_topic"]               = threshold_state_topic(ctx.prefix, ctx.server_id, kind, id, which);
+    o["device_class"]              = "temperature";
+    o["unit_of_measurement"]       = "°C";
+    o["suggested_display_precision"] = 1;
+    o["entity_category"]           = "diagnostic";
+    add_entity_common(o, ctx, "sensor", uid);
     return json::serialize(o);
 }
 
