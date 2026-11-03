@@ -97,11 +97,33 @@ def bridge_status():
 STATUS_DIR = os.path.join(DATA_DIR, "status")
 
 
+MQTT_STATUS_NAME = "mqtt"   # <data dir>/status/mqtt.json: the bridge's MQTT connection
+
+
+def _read_status_file(name, now, entry):
+    """Merges <status dir>/<name>.json and its age into `entry`. A missing or
+    unreadable file marks the entry ("missing" / "error"), never raises."""
+    path = os.path.join(STATUS_DIR, name + ".json")
+    try:
+        mtime = os.stat(path).st_mtime
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("not a JSON object")
+        return {**data, **entry, "age_sec": max(0, int(now - mtime))}
+    except FileNotFoundError:
+        entry["missing"] = True
+    except (OSError, ValueError) as e:
+        entry["error"] = str(e)[:120]
+    return entry
+
+
 @app.route("/api/servers/status")
 def servers_status():
     """Per-server live status from the files the bridge writes to
     <data dir>/status/<id>.json. Order follows bridge.json, else file names.
-    A missing/unreadable file becomes an entry, never an HTTP error."""
+    A missing/unreadable file becomes an entry, never an HTTP error. The
+    "mqtt" member is the bridge's MQTT connection (status/mqtt.json), same rules."""
     now = time.time()
     ids = []
     try:
@@ -114,26 +136,13 @@ def servers_status():
         ids = []
     if not ids:
         try:
-            ids = sorted(n[:-5] for n in os.listdir(STATUS_DIR) if n.endswith(".json"))
+            ids = sorted(n[:-5] for n in os.listdir(STATUS_DIR)
+                         if n.endswith(".json") and n[:-5] != MQTT_STATUS_NAME)
         except OSError:
             ids = []
-    servers = []
-    for sid in ids:
-        path = os.path.join(STATUS_DIR, sid + ".json")
-        entry = {"server_id": sid}
-        try:
-            mtime = os.stat(path).st_mtime
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                raise ValueError("not a JSON object")
-            entry = {**data, "server_id": sid, "age_sec": max(0, int(now - mtime))}
-        except FileNotFoundError:
-            entry["missing"] = True
-        except (OSError, ValueError) as e:
-            entry["error"] = str(e)[:120]
-        servers.append(entry)
+    servers = [_read_status_file(sid, now, {"server_id": sid}) for sid in ids]
     return jsonify({"servers": servers,
+                    "mqtt": _read_status_file(MQTT_STATUS_NAME, now, {}),
                     "now": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))})
 
 

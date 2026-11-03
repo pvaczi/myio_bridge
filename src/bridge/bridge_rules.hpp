@@ -194,6 +194,28 @@ std::string make_server_diag_state(const ServerDiag& d);
 std::string make_server_status_state(const ServerDiag& d, std::optional<bool> online,
                                      std::chrono::system_clock::time_point now);
 
+// The bridge's MQTT connection as the Web UI shows it (<data dir>/status/mqtt.json).
+// Never carries the MQTT user or password.
+struct MqttStatus {
+    using time_point = std::chrono::system_clock::time_point;
+    bool        connected = false;
+    std::string broker;                         // "host:port"
+    std::optional<time_point> since;            // last state change (or process start)
+    std::optional<time_point> last_connect;
+    std::optional<time_point> last_disconnect;
+    int         reconnects = 0;                 // re-established connections since process start
+    std::string last_error;                     // "" = none (JSON null); kept after recovery
+};
+
+// State transitions. The first connect is not a reconnect; a disconnect while
+// already disconnected only refreshes last_error (since stays the first failure).
+void mqtt_status_connected(MqttStatus& s, MqttStatus::time_point now);
+void mqtt_status_disconnected(MqttStatus& s, MqttStatus::time_point now, std::string error);
+
+// Content of <data dir>/status/mqtt.json: the fields of MqttStatus (timestamps as
+// ISO UTC, null when unset) plus "written_at".
+std::string make_mqtt_status_state(const MqttStatus& s, std::chrono::system_clock::time_point now);
+
 enum class DiagEntity { LastPoll, PollLatency, ConsecutiveErrors, TotalErrors,
                         LastError, Firmware, InfoError };
 inline constexpr DiagEntity kServerDiagEntities[] = {

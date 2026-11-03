@@ -32,6 +32,24 @@ namespace bridge {
 namespace json = boost::json;
 using namespace std::chrono_literals;
 
+// Writes `content` to <dir>/<name> atomically (temp file + rename): the Web UI
+// never sees a partial status file. Throws on failure.
+static void write_status_file_atomic(const std::filesystem::path& dir, const std::string& name,
+                                     const std::string& content) {
+    namespace fs = std::filesystem;
+    fs::create_directories(dir);
+    const fs::path file = dir / name;
+    fs::path tmp = file;
+    tmp += ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << content;
+        out.close();
+        if (!out) throw std::runtime_error("cannot write " + tmp.string());
+    }
+    fs::rename(tmp, file);
+}
+
 // ── Topic generators ──────────────────────────────────────────────────────────
 
 std::string switch_state_topic(const std::string& p, const std::string& s, int id) {
@@ -789,19 +807,9 @@ ServerDiag ServerBridge::current_diag() const {
 void ServerBridge::write_status_file() {
     if (status_dir_.empty()) return;
     try {
-        namespace fs = std::filesystem;
-        fs::create_directories(status_dir_);
-        const fs::path file = status_dir_ / (cfg_.server_id + ".json");
-        fs::path tmp = file;
-        tmp += ".tmp";
-        {
-            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-            out << make_server_status_state(current_diag(), status_online_,
-                                            std::chrono::system_clock::now());
-            out.close();
-            if (!out) throw std::runtime_error("cannot write " + tmp.string());
-        }
-        fs::rename(tmp, file);   // atomic replace: the Web UI never sees a partial file
+        write_status_file_atomic(status_dir_, cfg_.server_id + ".json",
+                                 make_server_status_state(current_diag(), status_online_,
+                                                          std::chrono::system_clock::now()));
         status_last_error_.clear();
     } catch (const std::exception& ex) {
         const std::string msg = myio::short_what(ex);
@@ -1527,6 +1535,8 @@ Bridge::Bridge(config::BridgeConfig              cfg,
     , ioc_(ioc)
     , publisher_(std::move(publisher))
 {
+    mqtt_status_.broker = std::format("{}:{}", cfg_.mqtt.host, cfg_.mqtt.port);
+    mqtt_status_.since  = started_at_;
     for (auto& srv : cfg_.servers) {
         myio::HttpConfig hcfg;
         hcfg.host      = srv.host;
@@ -1630,6 +1640,43 @@ void Bridge::handle_bridge_button(BridgeButton b) {
     }
 }
 
+// ── MQTT status file ──────────────────────────────────────────────────────────
+
+void Bridge::mqtt_connected() {
+    mqtt_status_connected(mqtt_status_, std::chrono::system_clock::now());
+    write_mqtt_status_file();
+}
+
+void Bridge::mqtt_disconnected(std::string error) {
+    mqtt_status_disconnected(mqtt_status_, std::chrono::system_clock::now(), std::move(error));
+    write_mqtt_status_file();
+}
+
+void Bridge::write_mqtt_status_file() {
+    if (cfg_.data_dir.empty()) return;
+    try {
+        write_status_file_atomic(cfg_.data_dir / "status", "mqtt.json",
+                                 make_mqtt_status_state(mqtt_status_,
+                                                        std::chrono::system_clock::now()));
+        mqtt_status_write_error_.clear();
+    } catch (const std::exception& ex) {
+        const std::string msg = myio::short_what(ex);
+        if (msg != mqtt_status_write_error_) {   // once per distinct message
+            mqtt_status_write_error_ = msg;
+            myio::log(stderr, "[bridge] MQTT status file write failed: {}", msg);
+        }
+    }
+}
+
+net::awaitable<void> Bridge::mqtt_status_loop() {
+    net::steady_timer t(co_await net::this_coro::executor);
+    while (!stopping_) {
+        write_mqtt_status_file();
+        t.expires_after(30s);
+        co_await t.async_wait(net::use_awaitable);
+    }
+}
+
 void Bridge::schedule_discovery_resend(std::chrono::milliseconds delay) {
     if (discovery_resend_pending_) {
         myio::log("[bridge] Discovery re-send already pending, coalesced.");
@@ -1658,6 +1705,7 @@ void Bridge::schedule_discovery_resend(std::chrono::milliseconds delay) {
 
 net::awaitable<void> Bridge::shutdown() {
     stopping_ = true;
+    mqtt_disconnected("");   // the file is written first: the publish below may hang
     try {
         co_await publisher_->async_publish(
             bridge_availability_topic(cfg_.mqtt.topic_prefix), kAvailabilityOffline, true);
@@ -1669,10 +1717,14 @@ net::awaitable<void> Bridge::shutdown() {
 }
 
 net::awaitable<void> Bridge::run() {
+    // First, so a broker that is down at boot shows as offline in the Web UI.
+    net::co_spawn(ioc_, mqtt_status_loop(), net::detached);
     co_await publisher_->async_connect();
     sdnotify::notify("STATUS=MQTT connected");
     co_await publisher_->async_subscribe(cfg_.mqtt.topic_prefix + "/#");
     co_await publisher_->async_subscribe("homeassistant/status");
+    // The SUBACK is the first proof of a live connection (async_connect only starts it).
+    mqtt_connected();
     // Overrides the retained "offline" Will of a previous crash.
     co_await publish_bridge_online();
 
@@ -1740,10 +1792,12 @@ net::awaitable<void> Bridge::command_loop() {
             sdnotify::notify("STATUS=MQTT disconnected, reconnecting");
             if (session_expired) {
                 myio::log("[bridge] MQTT session expired – restoring subscriptions.");
+                mqtt_disconnected("MQTT session expired");
             } else {
                 try { std::rethrow_exception(caught); }
                 catch (const std::exception& ex) {
                     myio::log(stderr, "[bridge] Command loop error: {}", myio::short_what(ex));
+                    mqtt_disconnected(myio::short_what(ex));
                 }
                 net::steady_timer t(co_await net::this_coro::executor);
                 t.expires_after(30s);
@@ -1767,6 +1821,7 @@ net::awaitable<void> Bridge::command_loop() {
                     if (stopping_) co_return;
                     myio::log(stderr, "[bridge] Resubscribe failed (retry in 30s): {}",
                               myio::short_what(ex));
+                    mqtt_disconnected(myio::short_what(ex));
                 }
                 net::steady_timer t(co_await net::this_coro::executor);
                 t.expires_after(30s);
@@ -1774,6 +1829,7 @@ net::awaitable<void> Bridge::command_loop() {
                 if (stopping_) co_return;
             }
             sdnotify::notify("STATUS=MQTT connected");
+            mqtt_connected();
             try {
                 myio::log("[bridge] Reconnected – republishing discovery and scheduling state resync.");
                 for (auto& srv : servers_)

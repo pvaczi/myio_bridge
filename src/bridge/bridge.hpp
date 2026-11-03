@@ -267,6 +267,17 @@ private:
     // A bridge button press from HA (see BridgeButton).
     void handle_bridge_button(BridgeButton b);
 
+    // MQTT connection state for the Web UI: <data_dir>/status/mqtt.json, written on
+    // every state change and by mqtt_status_loop() every 30 s (so the UI can tell
+    // a stopped bridge by the file age). cfg_.data_dir empty = disabled. Never
+    // throws; a write failure is logged once per distinct message.
+    void mqtt_connected();
+    void mqtt_disconnected(std::string error);   // "" = no error to record
+    void write_mqtt_status_file();
+    net::awaitable<void> mqtt_status_loop();
+    MqttStatus  mqtt_status_;
+    std::string mqtt_status_write_error_;
+
     config::BridgeConfig                       cfg_;
     net::io_context&                           ioc_;
     std::shared_ptr<ha::IHAPublisher>          publisher_;

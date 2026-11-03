@@ -522,6 +522,61 @@ const json::object* find_entry(const json::object& srv, const char* section, std
     return nullptr;
 }
 
+void test_mqtt_status() {
+    namespace json = boost::json;
+    using namespace std::chrono;
+    const auto t0 = sys_days{year{2026} / 11 / 3} + hours{8};
+
+    // Fresh process: offline, only the start time known, every other field null.
+    bridge::MqttStatus s;
+    s.broker = "10.0.0.2:1883";
+    s.since  = t0;
+    auto o = json::parse(bridge::make_mqtt_status_state(s, t0 + seconds{5})).as_object();
+    CHECK(o.at("connected").as_bool() == false);
+    CHECK(o.at("broker").as_string() == "10.0.0.2:1883");
+    CHECK(o.at("since").as_string() == "2026-11-03T08:00:00Z");
+    CHECK(o.at("last_connect").is_null());
+    CHECK(o.at("last_disconnect").is_null());
+    CHECK(o.at("reconnects").as_int64() == 0);
+    CHECK(o.at("last_error").is_null());
+    CHECK(o.at("written_at").as_string() == "2026-11-03T08:00:05Z");
+
+    // A failure while still offline records the error but keeps `since`.
+    bridge::mqtt_status_disconnected(s, t0 + minutes{1}, "refused");
+    CHECK(s.since == t0);
+    CHECK(!s.last_disconnect);
+    CHECK(s.last_error == "refused");
+
+    // First connect: not a reconnect.
+    bridge::mqtt_status_connected(s, t0 + minutes{2});
+    o = json::parse(bridge::make_mqtt_status_state(s, t0 + minutes{3})).as_object();
+    CHECK(o.at("connected").as_bool() == true);
+    CHECK(o.at("since").as_string() == "2026-11-03T08:02:00Z");
+    CHECK(o.at("last_connect").as_string() == "2026-11-03T08:02:00Z");
+    CHECK(o.at("reconnects").as_int64() == 0);
+    CHECK(o.at("last_error").as_string() == "refused");   // kept after recovery
+
+    // Connection lost, then re-established: one reconnect.
+    bridge::mqtt_status_disconnected(s, t0 + minutes{10}, "connection reset");
+    o = json::parse(bridge::make_mqtt_status_state(s, t0 + minutes{10})).as_object();
+    CHECK(o.at("connected").as_bool() == false);
+    CHECK(o.at("since").as_string() == "2026-11-03T08:10:00Z");
+    CHECK(o.at("last_disconnect").as_string() == "2026-11-03T08:10:00Z");
+    CHECK(o.at("last_error").as_string() == "connection reset");
+    bridge::mqtt_status_connected(s, t0 + minutes{11});
+    CHECK(s.reconnects == 1);
+
+    // An error-less disconnect (clean shutdown) keeps the previous last_error.
+    bridge::mqtt_status_disconnected(s, t0 + minutes{12}, "");
+    CHECK(!s.connected);
+    CHECK(s.last_error == "connection reset");
+
+    // The payload never carries credentials.
+    const auto raw = bridge::make_mqtt_status_state(s, t0);
+    CHECK(raw.find("user") == std::string::npos);
+    CHECK(raw.find("password") == std::string::npos);
+}
+
 void test_diagnostics() {
     namespace json = boost::json;
     using namespace std::chrono;
@@ -783,6 +838,7 @@ int main() {
     test_sensor_class();
     test_discovery_blocks();
     test_diagnostics();
+    test_mqtt_status();
     test_discovery_merge();
     test_sd_notify();
 

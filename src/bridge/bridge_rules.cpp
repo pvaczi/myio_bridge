@@ -372,6 +372,39 @@ std::string make_server_status_state(const ServerDiag& d, std::optional<bool> on
     return json::serialize(o);
 }
 
+void mqtt_status_connected(MqttStatus& s, MqttStatus::time_point now) {
+    if (s.last_connect) ++s.reconnects;
+    s.connected    = true;
+    s.since        = now;
+    s.last_connect = now;
+}
+
+void mqtt_status_disconnected(MqttStatus& s, MqttStatus::time_point now, std::string error) {
+    if (s.connected) {
+        s.connected       = false;
+        s.since           = now;
+        s.last_disconnect = now;
+    }
+    if (!error.empty()) s.last_error = std::move(error);
+}
+
+std::string make_mqtt_status_state(const MqttStatus& s, std::chrono::system_clock::time_point now) {
+    const auto ts = [](const std::optional<MqttStatus::time_point>& t) {
+        return t ? json::value(format_iso_utc(*t)) : json::value(nullptr);
+    };
+    json::object o{
+        {"connected",       s.connected},
+        {"broker",          s.broker},
+        {"since",           ts(s.since)},
+        {"last_connect",    ts(s.last_connect)},
+        {"last_disconnect", ts(s.last_disconnect)},
+        {"reconnects",      s.reconnects},
+        {"last_error",      s.last_error.empty() ? json::value(nullptr) : json::value(s.last_error)},
+        {"written_at",      format_iso_utc(now)},
+    };
+    return json::serialize(o);
+}
+
 namespace {
 struct DiagMeta {
     std::string_view key;       // unique_id / topic suffix and diag JSON field group

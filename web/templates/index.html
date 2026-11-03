@@ -103,6 +103,20 @@
     .srv-grid .srv-v { overflow-wrap: anywhere; }
     @media (max-width: 575.98px) { .srv-grid { grid-template-columns: 1fr; } }
 
+    /* Bridge view: the three column groups (status+MQTT, servers, log) stack on narrow
+       screens, status+servers sit side by side from 1200 px with the log below, and all
+       three share one row from 1600 px, the log filling the viewport height. */
+    .bridge-grid { display: grid; grid-template-columns: minmax(0, 1fr); column-gap: 1rem; align-items: start; }
+    @media (min-width: 1200px) {
+      .bridge-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+      .bridge-col-log { grid-column: 1 / -1; }
+    }
+    @media (min-width: 1600px) {
+      .bridge-grid { grid-template-columns: minmax(300px, 1fr) minmax(0, 1.4fr) minmax(0, 1.6fr); }
+      .bridge-col-log { grid-column: auto; }
+      #bridge-log { height: calc(100vh - 250px); min-height: 300px; }
+    }
+
     /* Own confirm dialog (Bootstrap modal markup, no Bootstrap JS on the page) */
     #confirm-modal { display: none; z-index: 2000; background: rgba(0,0,0,.5); }
     #confirm-modal.open { display: block; }
@@ -123,7 +137,7 @@
   </style>
 </head>
 <body>
-<div class="container-fluid" style="max-width: 860px;">
+<div class="container-fluid">
   <h4 class="mb-3">myIO Bridge Control
     <span id="app-version" class="badge bg-secondary align-middle"
           style="font-size:.55em;font-weight:normal;vertical-align:middle;" title="Telepített bridge verzió">…</span>
@@ -140,48 +154,64 @@
 
   <!-- ===== BRIDGE MODE ===== -->
   <div id="mode-bridge">
-    <div class="card mb-3">
-      <div class="card-body">
-        <h6 class="card-title">Bridge státusz</h6>
-        <p class="mb-2">
-          <span id="status-dot" class="status-dot status-unknown"></span>
-          <span id="status-text">–</span>
-        </p>
-        <button id="btn-start" class="btn btn-sm btn-success me-2" onclick="bridgeAction('start')">Start</button>
-        <button id="btn-stop"  class="btn btn-sm btn-danger"       onclick="confirmStop()">Stop</button>
-        <div id="bridge-error" class="text-danger small mt-2" style="display:none;"></div>
-      </div>
-    </div>
-
-    <div class="card mb-3">
-      <div class="card-body">
-        <h6 class="card-title">Szerverek</h6>
-        <div id="servers-error" class="text-danger small mb-2" style="display:none;"></div>
-        <div id="servers-list"><span class="text-muted small">Betöltés…</span></div>
-      </div>
-    </div>
-
-    <div class="mb-3">
-      <button class="btn btn-sm btn-outline-secondary" onclick="openBridgeConfigPopup()">bridge.json szerkesztése</button>
-    </div>
-
-    <div class="card mb-3">
-      <div class="card-body">
-        <div class="d-flex align-items-center mb-2">
-          <h6 class="card-title mb-0 me-3">Bridge Log</h6>
-          <button class="btn btn-sm btn-outline-secondary me-3" onclick="fetchLog()">Frissítés</button>
-          <div class="form-check mb-0">
-            <input class="form-check-input" type="checkbox" id="log-auto" onchange="setLogAuto(this.checked)">
-            <label class="form-check-label small" for="log-auto">Auto (3 s)</label>
-          </div>
+   <div class="bridge-grid">
+    <div class="bridge-col">
+      <div class="card mb-3">
+        <div class="card-body">
+          <h6 class="card-title">Bridge státusz</h6>
+          <p class="mb-2">
+            <span id="status-dot" class="status-dot status-unknown"></span>
+            <span id="status-text">–</span>
+          </p>
+          <button id="btn-start" class="btn btn-sm btn-success me-2" onclick="bridgeAction('start')">Start</button>
+          <button id="btn-stop"  class="btn btn-sm btn-danger"       onclick="confirmStop()">Stop</button>
+          <div id="bridge-error" class="text-danger small mt-2" style="display:none;"></div>
         </div>
-        <textarea id="bridge-log" class="form-control log-ta" readonly placeholder="Kattints Frissítés-re…"></textarea>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-body">
+          <h6 class="card-title">MQTT</h6>
+          <div id="mqtt-error" class="text-danger small mb-2" style="display:none;"></div>
+          <div id="mqtt-status"><span class="text-muted small">Betöltés…</span></div>
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <button class="btn btn-sm btn-outline-secondary" onclick="openBridgeConfigPopup()">bridge.json szerkesztése</button>
       </div>
     </div>
+
+    <div class="bridge-col">
+      <div class="card mb-3">
+        <div class="card-body">
+          <h6 class="card-title">Szerverek</h6>
+          <div id="servers-error" class="text-danger small mb-2" style="display:none;"></div>
+          <div id="servers-list"><span class="text-muted small">Betöltés…</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bridge-col bridge-col-log">
+      <div class="card mb-3">
+        <div class="card-body">
+          <div class="d-flex align-items-center mb-2">
+            <h6 class="card-title mb-0 me-3">Bridge Log</h6>
+            <button class="btn btn-sm btn-outline-secondary me-3" onclick="fetchLog()">Frissítés</button>
+            <div class="form-check mb-0">
+              <input class="form-check-input" type="checkbox" id="log-auto" onchange="setLogAuto(this.checked)">
+              <label class="form-check-label small" for="log-auto">Auto (3 s)</label>
+            </div>
+          </div>
+          <textarea id="bridge-log" class="form-control log-ta" readonly placeholder="Kattints Frissítés-re…"></textarea>
+        </div>
+      </div>
+    </div>
+   </div>
   </div>
 
   <!-- ===== DISCOVERY MODE ===== -->
-  <div id="mode-discovery" style="display:none;">
+  <div id="mode-discovery" style="display:none; max-width: 960px;">
     <div class="card mb-3">
       <div class="card-body">
         <h6 class="card-title">Discovery futtatása</h6>
@@ -1075,16 +1105,64 @@ function renderServers(d) {
   }
 }
 
+// MQTT connection card (data: status/mqtt.json, delivered as the "mqtt" member of the same response)
+function relSince(iso, now) {
+  if (!iso) return 'még nem volt';
+  const t = Date.parse(iso);
+  return isNaN(t) ? '–' : relAgo(Math.round((now - t) / 1000));
+}
+
+function renderMqtt(m, now) {
+  const box = document.getElementById('mqtt-status');
+  box.replaceChildren();
+  const tile = document.createElement('div');
+  tile.className = 'srv-tile';
+  const head = document.createElement('div');
+  head.className = 'srv-head';
+  const name = document.createElement('strong');
+  name.textContent = (m && m.broker) || 'MQTT broker';
+  head.append(name);
+  tile.append(head);
+  box.append(tile);
+  if (!m || m.missing || m.error) {
+    head.append(srvBadge('ismeretlen', 'bg-secondary'));
+    const msg = document.createElement('div');
+    msg.className = 'small ' + (m && m.error ? 'text-danger' : 'text-muted');
+    msg.textContent = m && m.error ? 'Hibás státuszfájl: ' + m.error
+                                   : 'Még nincs MQTT státuszfájl (a bridge nem futott, vagy régebbi verzió).';
+    tile.append(msg);
+    return;
+  }
+  if (m.connected === true) head.append(srvBadge('online', 'bg-success'));
+  else if (m.connected === false) head.append(srvBadge('offline', 'bg-danger'));
+  else head.append(srvBadge('ismeretlen', 'bg-secondary'));
+  if (m.age_sec > SERVER_STALE_SEC) head.append(srvBadge('elavult', 'bg-warning text-dark'));
+  const grid = document.createElement('div');
+  grid.className = 'srv-grid';
+  grid.append(
+    srvField(m.connected ? 'Csatlakozva' : 'Nincs kapcsolat', relSince(m.since, now)),
+    srvField('Újracsatlakozások', String(m.reconnects ?? 0)),
+    srvField('Utolsó csatlakozás', relSince(m.last_connect, now)),
+    srvField('Utolsó lekapcsolódás', relSince(m.last_disconnect, now)),
+    srvField('Utolsó hiba', m.last_error || 'nincs', true));
+  tile.append(grid);
+}
+
 async function fetchServers() {
   const err = document.getElementById('servers-error');
+  const merr = document.getElementById('mqtt-error');
   const d = await api('/api/servers/status');
   if (!d.servers) {
     err.textContent = d.error || 'Nem sikerült lekérni a szerverek állapotát';
     err.style.display = '';
+    merr.textContent = 'Nem sikerült lekérni az MQTT állapotát';
+    merr.style.display = '';
     return;
   }
   err.style.display = 'none';
+  merr.style.display = 'none';
   renderServers(d);
+  renderMqtt(d.mqtt, Date.parse(d.now));
 }
 
 // Refresh only while the page is visible; catch up immediately when it becomes visible again.
