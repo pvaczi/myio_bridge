@@ -148,14 +148,23 @@ private:
     // last successfully published value (or nothing was published yet).
     net::awaitable<void> update_availability(bool online);
 
-    // Read-only thermostat thresholds (min_temp_ON / max_temp_OFF) from GET /output.
-    // One request per trigger (startup, resync) — never periodic, never retried;
-    // a failure is logged once per distinct message and does not touch the
-    // availability or the poll error counters. Publishes the sensors' discovery
-    // (only when at least one output matches) and their changed states.
-    net::awaitable<void> fetch_thresholds();
+    // Read-only data of the GET /output page: the thermostat thresholds
+    // (min_temp_ON / max_temp_OFF) and the active slot. ONE request per trigger
+    // (startup, resync) — never periodic, never retried; the two parts are
+    // independent (one missing does not suppress the other). A failed request, or a
+    // page with neither part, is logged once per distinct message and does not touch
+    // the availability or the poll error counters (the known data stays).
+    net::awaitable<void> fetch_output_page();
+    // Threshold part: publishes the sensors' discovery (only when at least one
+    // output matches), clears stale ones and publishes the changed states.
+    net::awaitable<void> apply_thresholds(std::vector<ThermostatThreshold> mapped);
+    // Slot part: publishes the "Aktív slot" discovery and the changed state /
+    // attributes; slot == nullopt clears what was published before.
+    net::awaitable<void> apply_slot(std::optional<SlotInfo> slot);
     // (Re)sends the discovery of the known threshold sensors; failures are logged.
     net::awaitable<void> publish_threshold_discovery();
+    // (Re)sends the discovery of the active-slot sensor; failures are logged.
+    net::awaitable<void> publish_slot_discovery();
     std::string output_name(OutputKind kind, int id) const;
 
     config::ServerConfig                cfg_;
@@ -198,15 +207,21 @@ private:
     // Covers whose retained state was seeded ("stopped"/50) on the first discovery.
     std::unordered_set<std::string> seeded_covers_;
 
+    // GET /output data. output_page_pending_ = fetch at the next successful poll
+    // (set at startup and by schedule_resync).
+    bool                                  output_page_pending_ = true;
+    std::string                           last_output_error_;      // last logged fetch error ("" = none)
     // Thermostat thresholds: outputs with a temperature sensor assigned, from the
-    // last successful GET /output. thresholds_pending_ = fetch at the next
-    // successful poll (set at startup and by schedule_resync).
-    bool                                  thresholds_pending_ = true;
+    // last successful GET /output.
     std::vector<ThermostatThreshold>      thresholds_;
     std::unordered_set<int>               thresholds_discovered_;  // threshold_key() with discovery published
     std::unordered_map<int, int>          last_thr_on_;            // threshold_key() → last published raw
     std::unordered_map<int, int>          last_thr_off_;
-    std::string                           last_thr_error_;         // last logged fetch error ("" = none)
+    // Active slot of the last successful GET /output (nullopt = none / not present).
+    std::optional<SlotInfo>               slot_;
+    bool                                  slot_discovered_ = false;  // discovery published (clear it when the slot is gone)
+    std::optional<std::string>            last_slot_state_;          // last published state / attributes
+    std::optional<std::string>            last_slot_attrs_;
 
     std::string last_poll_error_;
     bool        syncing_ = false;  // true during startup/resync poll — tags log lines as [startup sync]

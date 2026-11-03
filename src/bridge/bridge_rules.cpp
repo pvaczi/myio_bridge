@@ -640,6 +640,135 @@ std::string make_threshold_discovery(const DiscoveryContext& ctx, OutputKind kin
     return json::serialize(o);
 }
 
+// ── Active slot ───────────────────────────────────────────────────────────────
+
+namespace {
+
+// Offset of the value of the first `var <name> = ...` declaration (after the '=' and
+// the whitespace behind it); nullopt = no such declaration. `var` and the name must
+// be whole words.
+std::optional<std::size_t> find_var_value(std::string_view html, std::string_view name) {
+    if (name.empty()) return std::nullopt;
+    for (auto pos = html.find(name); pos != std::string_view::npos;
+         pos = html.find(name, pos + 1)) {
+        auto b = pos;
+        while (b > 0 && is_space(html[b - 1])) --b;
+        if (b == pos || b < 3 || html.substr(b - 3, 3) != "var") continue;
+        if (b > 3 && is_ident_char(html[b - 4])) continue;
+
+        auto i = pos + name.size();
+        if (i < html.size() && is_ident_char(html[i])) continue;
+        i = skip_spaces(html, i);
+        if (i >= html.size() || html[i] != '=') continue;
+        return skip_spaces(html, i + 1);
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+std::optional<int> parse_js_int_scalar(std::string_view html, std::string_view name) {
+    const auto at = find_var_value(html, name);
+    if (!at || *at >= html.size()) return std::nullopt;
+    int v = 0;
+    const char* first = html.data() + *at;
+    const char* last  = html.data() + html.size();
+    const auto [ptr, ec] = std::from_chars(first, last, v);
+    if (ec != std::errc{}) return std::nullopt;
+    // `1.5` or `12abc` is not an integer literal.
+    if (ptr != last && (is_ident_char(*ptr) || *ptr == '.')) return std::nullopt;
+    return v;
+}
+
+std::map<int, std::string> parse_js_indexed_strings(std::string_view html, std::string_view name) {
+    std::map<int, std::string> out;
+    if (name.empty()) return out;
+    for (auto pos = html.find(name); pos != std::string_view::npos;
+         pos = html.find(name, pos + 1)) {
+        if (pos > 0 && is_ident_char(html[pos - 1])) continue;
+        auto i = pos + name.size();
+        if (i < html.size() && is_ident_char(html[i])) continue;
+        i = skip_spaces(html, i);
+        if (i >= html.size() || html[i] != '[') continue;
+        ++i;
+        int index = 0;
+        const auto [ptr, ec] = std::from_chars(html.data() + i, html.data() + html.size(), index);
+        if (ec != std::errc{}) continue;
+        i = static_cast<std::size_t>(ptr - html.data());
+        if (i >= html.size() || html[i] != ']') continue;
+        i = skip_spaces(html, i + 1);
+        if (i >= html.size() || html[i] != '=') continue;
+        i = skip_spaces(html, i + 1);
+        if (i >= html.size() || html[i] != '\'') continue;
+        ++i;
+
+        std::string text;
+        bool closed = false;
+        for (; i < html.size(); ++i) {
+            const char c = html[i];
+            if (c == '\n' || c == '\r') break;                 // unterminated literal
+            if (c == '\'') { closed = true; break; }
+            if (c == '\\' && i + 1 < html.size() && html[i + 1] != '\n' && html[i + 1] != '\r') {
+                const char n = html[i + 1];
+                if (n != '\'' && n != '\\') text.push_back(c);  // other escapes stay verbatim
+                text.push_back(n);
+                ++i;
+                continue;
+            }
+            text.push_back(c);
+        }
+        if (closed) out.insert_or_assign(index, std::move(text));
+    }
+    return out;
+}
+
+std::optional<SlotInfo> parse_active_slot(std::string_view html) {
+    const auto actual = parse_js_int_scalar(html, "actualSlot");
+    if (!actual || *actual < 0) return std::nullopt;
+    SlotInfo info;
+    info.index      = *actual;
+    info.boot_index = parse_js_int_scalar(html, "bootUpSlot");
+    info.count      = parse_js_int_scalar(html, "slotQuantity");
+
+    const auto names = parse_js_indexed_strings(html, "slot_description");
+    if (const auto it = names.find(info.index); it != names.end())
+        info.name = std::string(trim(it->second));
+    if (info.name.empty()) info.name = std::format("Slot {}", info.index + 1);
+    return info;
+}
+
+std::string slot_state_topic(std::string_view prefix, std::string_view server_id) {
+    return std::format("{}/{}/slot/state", prefix, server_id);
+}
+
+std::string slot_attributes_topic(std::string_view prefix, std::string_view server_id) {
+    return std::format("{}/{}/slot/attributes", prefix, server_id);
+}
+
+std::string slot_discovery_topic(std::string_view server_id) {
+    return std::format("homeassistant/sensor/myio_{}_active_slot/config", server_id);
+}
+
+std::string make_slot_attributes(const SlotInfo& info) {
+    json::object o;
+    o["index"] = info.index;
+    if (info.boot_index) o["boot_index"] = *info.boot_index;
+    if (info.count)      o["count"]      = *info.count;
+    return json::serialize(o);
+}
+
+std::string make_slot_discovery(const DiscoveryContext& ctx) {
+    const std::string uid = std::format("myio_{}_active_slot", ctx.server_id);
+    json::object o;
+    o["name"]                   = "Aktív slot";
+    o["unique_id"]              = uid;
+    o["state_topic"]            = slot_state_topic(ctx.prefix, ctx.server_id);
+    o["json_attributes_topic"]  = slot_attributes_topic(ctx.prefix, ctx.server_id);
+    o["icon"]                   = "mdi:format-list-numbered";
+    add_entity_common(o, ctx, "sensor", uid);
+    return json::serialize(o);
+}
+
 std::string bridge_started_topic(std::string_view prefix) {
     return std::format("{}/bridge/started", prefix);
 }

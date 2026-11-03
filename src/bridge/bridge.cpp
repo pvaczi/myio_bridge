@@ -589,6 +589,9 @@ net::awaitable<void> ServerBridge::publish_discovery() {
     // reconnect re-sends); the first fetch publishes them itself.
     if (!thresholds_.empty())
         co_await publish_threshold_discovery();
+    // Active-slot sensor: likewise only once a GET /output carried a slot.
+    if (slot_)
+        co_await publish_slot_discovery();
 
     if (failures > 0)
         myio::log(stderr, "[{}] Discovery: {} publish(es) failed, first: {}",
@@ -743,9 +746,11 @@ void ServerBridge::schedule_resync() {
     for (auto& [id, v] : last_pwm_state_)   v = -1;
     for (auto& [id, v] : last_sensor_val_)        v = std::numeric_limits<double>::max();
     for (auto& [id, v] : last_sensor_logged_val_) v = std::numeric_limits<double>::max();
-    last_thr_on_.clear();          // thresholds: refetched (GET /output) and republished
+    last_thr_on_.clear();          // thresholds + slot: refetched (GET /output) and republished
     last_thr_off_.clear();
-    thresholds_pending_ = true;
+    last_slot_state_.reset();
+    last_slot_attrs_.reset();
+    output_page_pending_ = true;
     published_available_.reset();  // republish the server availability too
     diag_force_ = true;            // ... and the diag JSON
     syncing_ = true;
@@ -793,11 +798,11 @@ net::awaitable<void> ServerBridge::publish_threshold_discovery() {
                   cfg_.server_id, failures, first_error);
 }
 
-net::awaitable<void> ServerBridge::fetch_thresholds() {
-    thresholds_pending_ = false;   // one attempt per trigger; a resync sets it again
-    const auto ex = co_await net::this_coro::executor;
+net::awaitable<void> ServerBridge::fetch_output_page() {
+    output_page_pending_ = false;   // one attempt per trigger; a resync sets it again
 
     std::optional<std::vector<ThermostatThreshold>> mapped;
+    std::optional<SlotInfo> slot;
     std::string error;
     try {
         const auto html = co_await client_->async_get_page("/output");
@@ -809,19 +814,29 @@ net::awaitable<void> ServerBridge::fetch_thresholds() {
             if (e.enabled && !is_cover_endpoint(cfg_.covers, OutputKind::Pca, e.id))
                 pca_ids.push_back(e.id);
         mapped = map_thermostat_thresholds(html, relay_ids, pca_ids);
-        if (!mapped) error = "no thermostat arrays in the /output page";
+        slot   = parse_active_slot(html);
+        if (!mapped && !slot) error = "no thermostat arrays and no active slot in the /output page";
     } catch (const std::exception& e) {
         error = myio::short_what(e);
     }
-    if (!mapped) {
+    if (!mapped && !slot) {
         // Not a poll error: availability and the error counters stay untouched.
-        if (error != last_thr_error_)
-            myio::log(stderr, "[{}] Thermostat thresholds unavailable: {}", cfg_.server_id, error);
-        last_thr_error_ = error;
+        if (error != last_output_error_)
+            myio::log(stderr, "[{}] /output data unavailable (thresholds, active slot): {}",
+                      cfg_.server_id, error);
+        last_output_error_ = error;
         co_return;
     }
-    last_thr_error_.clear();
-    thresholds_ = std::move(*mapped);
+    last_output_error_.clear();
+    // The parts are independent: a missing one neither blocks nor (for the
+    // thresholds) clears the other.
+    if (mapped) co_await apply_thresholds(std::move(*mapped));
+    co_await apply_slot(std::move(slot));
+}
+
+net::awaitable<void> ServerBridge::apply_thresholds(std::vector<ThermostatThreshold> mapped) {
+    const auto ex = co_await net::this_coro::executor;
+    thresholds_ = std::move(mapped);
 
     std::unordered_set<int> matched;
     for (const auto& t : thresholds_) matched.insert(threshold_key(t.kind, t.id));
@@ -886,6 +901,65 @@ net::awaitable<void> ServerBridge::fetch_thresholds() {
         co_await run_concurrently(ex, std::move(pending));
     } catch (const std::exception& e) {
         myio::log(stderr, "[{}] Threshold state publish error: {}",
+                  cfg_.server_id, myio::short_what(e));
+    }
+}
+
+// ── Active slot ───────────────────────────────────────────────────────────────
+
+net::awaitable<void> ServerBridge::publish_slot_discovery() {
+    slot_discovered_ = true;
+    try {
+        co_await publisher_->async_publish(slot_discovery_topic(cfg_.server_id),
+                                           make_slot_discovery(discovery_context()), true);
+    } catch (const std::exception& e) {
+        myio::log(stderr, "[{}] Active slot discovery failed: {}",
+                  cfg_.server_id, myio::short_what(e));
+    }
+}
+
+net::awaitable<void> ServerBridge::apply_slot(std::optional<SlotInfo> slot) {
+    if (!slot) {
+        // The page no longer carries a slot: remove what was published.
+        const bool was_discovered = slot_discovered_;
+        slot_.reset();
+        slot_discovered_ = false;
+        last_slot_state_.reset();
+        last_slot_attrs_.reset();
+        if (!was_discovered) co_return;
+        try {
+            co_await publisher_->async_publish(slot_discovery_topic(cfg_.server_id), "", true);
+            co_await publisher_->async_publish(slot_state_topic(topic_prefix_, cfg_.server_id), "", true);
+            co_await publisher_->async_publish(slot_attributes_topic(topic_prefix_, cfg_.server_id), "", true);
+        } catch (const std::exception& e) {
+            myio::log(stderr, "[{}] Active slot discovery clear failed: {}",
+                      cfg_.server_id, myio::short_what(e));
+        }
+        co_return;
+    }
+
+    slot_ = std::move(slot);
+    const auto info  = *slot_;   // copy: slot_ may change while a publish awaits
+    const auto attrs = make_slot_attributes(info);
+    myio::log("[{}] Active slot: {} ({})", cfg_.server_id, info.index, info.name);
+
+    co_await publish_slot_discovery();
+
+    // State and attributes: published only when changed (cache updated after the
+    // publish succeeded). Attributes first, so they are in place when the state arrives.
+    try {
+        if (last_slot_attrs_ != attrs) {
+            co_await publisher_->async_publish(
+                slot_attributes_topic(topic_prefix_, cfg_.server_id), attrs, true);
+            last_slot_attrs_ = attrs;
+        }
+        if (last_slot_state_ != info.name) {
+            co_await publisher_->async_publish(
+                slot_state_topic(topic_prefix_, cfg_.server_id), info.name, true);
+            last_slot_state_ = info.name;
+        }
+    } catch (const std::exception& e) {
+        myio::log(stderr, "[{}] Active slot state publish error: {}",
                   cfg_.server_id, myio::short_what(e));
     }
 }
@@ -1267,10 +1341,11 @@ net::awaitable<void> ServerBridge::poll_loop() {
             }
         }
 
-        // Thermostat thresholds: one GET /output after the first successful poll
-        // and after every resync (also set on a broker reconnect) — never periodic.
-        if (!caught && thresholds_pending_)
-            co_await fetch_thresholds();
+        // Thermostat thresholds + active slot: one GET /output after the first
+        // successful poll and after every resync (also set on a broker reconnect)
+        // — never periodic.
+        if (!caught && output_page_pending_)
+            co_await fetch_output_page();
 
         co_await update_diag(diag_error_changed);
 

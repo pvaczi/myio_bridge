@@ -324,6 +324,8 @@ Home Assistant auto-discovery messages are published to the standard `homeassist
 
 For every enabled relay/PCA output that has a temperature sensor assigned in its thermostat settings (heating controller), the bridge publishes two read-only diagnostic `sensor` entities (device class `temperature`, °C, one decimal): `<output name> bekapcsolási küszöb` (`min_temp_ON`) and `<output name> kikapcsolási küszöb` (`max_temp_OFF`). Unique ids: `myio_<server>_<relay|pca>_<id>_thr_<on|off>`; state topics `<prefix>/<server_id>/threshold/<relay|pca>/<id>/<on|off>`. The values come from the device's `GET /output` page, fetched **once** after the first successful poll and again on every resync (broker reconnect, **Állapot újraszinkronizálása** button) — never periodically. Servers without those arrays get one log warning and no entities; a failed fetch does not affect availability.
 
+The same fetch also yields the controller's **active slot**: one server-level `sensor` **Aktív slot** (icon `mdi:format-list-numbered`, not a diagnostic entity) per server whose page carries `actualSlot`. Its state is the slot's name (`slot_description[actualSlot]`, else `Slot <n>`); the attributes `index`, `boot_index` (`bootUpSlot`) and `count` (`slotQuantity`) are published on `<prefix>/<server_id>/slot/attributes`, the state on `<prefix>/<server_id>/slot/state` (retained, only on change). Unique id `myio_<server>_active_slot`. The sensor and the thresholds are independent: a page with only one of them still publishes that one; the warning is logged only when neither is found. If a later fetch no longer carries `actualSlot`, the sensor is removed.
+
 ### Diagnostic entities
 
 Zero extra requests reach the myIO devices: everything comes from the already running poll.

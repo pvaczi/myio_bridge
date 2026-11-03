@@ -973,6 +973,126 @@ void test_threshold_entities() {
     CHECK(off.at("unique_id").as_string() == "myio_heating_relay_3_thr_off");
 }
 
+// The slot lines of the real heating controller page (GET /output, 2026.11.03).
+constexpr const char* kSlotPage =
+    "<script>\n"
+    "var actualSlot=0;\n"
+    "var bootUpSlot=0;\n"
+    "var slotQuantity=3;\n"
+    "var slot_description=new Array(3);\n"
+    "slot_description [0]='Fűtés';\n"
+    "slot_description [1]='Hűtés';\n"
+    "slot_description [2]='minden be';\n"
+    "var slotExist=[1,1,1,0,0];\n"
+    "</script>\n";
+
+void test_js_scalar_and_strings() {
+    using bridge::parse_js_int_scalar;
+    using bridge::parse_js_indexed_strings;
+
+    // Scalar: real lines, whitespace tolerance, negative, no terminating ';'
+    const std::string_view page = kSlotPage;
+    CHECK(parse_js_int_scalar(page, "actualSlot") == 0);
+    CHECK(parse_js_int_scalar(page, "slotQuantity") == 3);
+    CHECK(parse_js_int_scalar("var  a \t=\n 42 ;", "a") == 42);
+    CHECK(parse_js_int_scalar("var a=-7;", "a") == -7);
+    CHECK(parse_js_int_scalar("var a=5", "a") == 5);
+
+    // Whole identifier only: a prefixed / longer name does not match
+    CHECK(!parse_js_int_scalar("var xbootUpSlot=1;", "bootUpSlot"));
+    CHECK(!parse_js_int_scalar("var PCA_bootUpSlot=1;", "bootUpSlot"));
+    CHECK(!parse_js_int_scalar("var bootUpSlot2=1;", "bootUpSlot"));
+    CHECK(parse_js_int_scalar("var xbootUpSlot=1;var bootUpSlot=2;", "bootUpSlot") == 2);
+    // Not a `var` declaration / not an integer / missing
+    CHECK(!parse_js_int_scalar("bootUpSlot=1;", "bootUpSlot"));
+    CHECK(!parse_js_int_scalar("xvar a=1;", "a"));
+    CHECK(!parse_js_int_scalar("var a=[1,2];", "a"));
+    CHECK(!parse_js_int_scalar("var a=1.5;", "a"));
+    CHECK(!parse_js_int_scalar("var a=12abc;", "a"));
+    CHECK(!parse_js_int_scalar("var a=", "a"));
+    CHECK(!parse_js_int_scalar("", "a"));
+    CHECK(!parse_js_int_scalar(page, ""));
+    CHECK(!parse_js_int_scalar(page, "noSuchVar"));
+
+    // Indexed strings: UTF-8, the `new Array` declaration ignored
+    const auto names = parse_js_indexed_strings(page, "slot_description");
+    CHECK(names.size() == 3);
+    CHECK(names.at(0) == "Fűtés" && names.at(1) == "Hűtés" && names.at(2) == "minden be");
+
+    // Escapes, whitespace variants, empty string, later entry wins
+    const auto esc = parse_js_indexed_strings(
+        "n [0]='it\\'s';\nn[1] = 'a\\\\b';\nn [ 2 ]='x';\nn [3]='';\nn [0]='again';", "n");
+    CHECK(esc.size() == 3);
+    CHECK(esc.at(0) == "again" && esc.at(1) == "a\\b" && esc.at(3) == "");
+    CHECK(parse_js_indexed_strings("n [0]='it\\'s';", "n").at(0) == "it's");
+
+    // Exact identifier; comparison and unterminated literal are not entries
+    CHECK(parse_js_indexed_strings("xn [0]='a';\nn2 [0]='b';\nPCA_n [0]='c';", "n").empty());
+    CHECK(parse_js_indexed_strings("n [0]=='a';", "n").empty());
+    CHECK(parse_js_indexed_strings("n [0]='abc\nn [1]='ok';", "n").size() == 1);
+    CHECK(parse_js_indexed_strings("n [x]='a';\nn [0]=5;", "n").empty());
+    CHECK(parse_js_indexed_strings("", "n").empty());
+    CHECK(parse_js_indexed_strings(page, "").empty());
+}
+
+void test_active_slot() {
+    using bridge::parse_active_slot;
+    namespace json = boost::json;
+
+    // The real page: slot 0 = "Fűtés", 3 slots
+    const auto s = parse_active_slot(kSlotPage);
+    CHECK(s.has_value());
+    if (s) {
+        CHECK(s->index == 0 && s->name == "Fűtés");
+        CHECK(s->boot_index == 0 && s->count == 3);
+    }
+
+    // Another active slot, boot slot differs
+    const auto s2 = parse_active_slot(std::string(kSlotPage) + "var actualSlot=2;var bootUpSlot=1;");
+    CHECK(s2 && s2->index == 0);   // the first declaration decides
+    const auto s3 = parse_active_slot(
+        "var actualSlot=2;var bootUpSlot=1;slot_description [2]=' Éjszaka ';");
+    CHECK(s3 && s3->index == 2 && s3->name == "Éjszaka" && s3->boot_index == 1 && !s3->count);
+
+    // Fallback name: no description array, no entry for the index, or an empty one
+    const auto f1 = parse_active_slot("var actualSlot=1;");
+    CHECK(f1 && f1->name == "Slot 2" && !f1->boot_index && !f1->count);
+    const auto f2 = parse_active_slot("var actualSlot=5;slot_description [0]='A';");
+    CHECK(f2 && f2->name == "Slot 6");
+    const auto f3 = parse_active_slot("var actualSlot=0;slot_description [0]='  ';");
+    CHECK(f3 && f3->name == "Slot 1");
+
+    // Missing / unusable actualSlot
+    CHECK(!parse_active_slot("<html>nothing</html>"));
+    CHECK(!parse_active_slot("var bootUpSlot=0;slot_description [0]='A';"));
+    CHECK(!parse_active_slot("var xactualSlot=0;"));
+    CHECK(!parse_active_slot("var actualSlot=-1;"));
+    CHECK(!parse_active_slot(""));
+
+    // Topics and entity
+    CHECK(bridge::slot_state_topic("myio", "heating") == "myio/heating/slot/state");
+    CHECK(bridge::slot_attributes_topic("myio", "heating") == "myio/heating/slot/attributes");
+    CHECK(bridge::slot_discovery_topic("heating") == "homeassistant/sensor/myio_heating_active_slot/config");
+
+    const auto attrs = json::parse(bridge::make_slot_attributes(*s)).as_object();
+    CHECK(attrs.at("index").as_int64() == 0 && attrs.at("boot_index").as_int64() == 0
+          && attrs.at("count").as_int64() == 3 && attrs.size() == 3);
+    const auto partial = json::parse(bridge::make_slot_attributes(*f1)).as_object();
+    CHECK(partial.size() == 1 && partial.at("index").as_int64() == 1);
+
+    bridge::DiscoveryContext ctx;
+    ctx.prefix = "myio"; ctx.server_id = "heating"; ctx.host = "10.0.0.5"; ctx.bridge_version = "v1";
+    const auto d = json::parse(bridge::make_slot_discovery(ctx)).as_object();
+    CHECK(d.at("name").as_string() == "Aktív slot");
+    CHECK(d.at("unique_id").as_string() == "myio_heating_active_slot");
+    CHECK(d.at("state_topic").as_string() == "myio/heating/slot/state");
+    CHECK(d.at("json_attributes_topic").as_string() == "myio/heating/slot/attributes");
+    CHECK(d.at("icon").as_string() == "mdi:format-list-numbered");
+    CHECK(!d.contains("entity_category") && !d.contains("device_class")
+          && !d.contains("command_topic") && !d.contains("state_class"));
+    CHECK(d.contains("device") && d.contains("availability"));
+}
+
 void test_extract_http_body() {
     using bridge::extract_http_body;
     auto throws = [](const std::string& raw) {
@@ -1027,6 +1147,8 @@ int main() {
     test_thermostat_mapping();
     test_thermostat_mapping_edges();
     test_threshold_entities();
+    test_js_scalar_and_strings();
+    test_active_slot();
     test_extract_http_body();
 
     std::printf("%d/%d checks passed\n", g_checks - g_failures, g_checks);

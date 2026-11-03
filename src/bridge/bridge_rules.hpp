@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -192,6 +193,45 @@ boost::json::object bridge_device_block(std::string_view bridge_version);
 // default_entity_id = "<component>.<object_id>" to an entity's discovery config.
 void add_entity_common(boost::json::object& o, const DiscoveryContext& ctx,
                        std::string_view component, std::string_view object_id);
+
+// ── Active slot (read-only, from the same GET /output page) ───────────────────
+// The page carries the controller's active slot (program) as JavaScript, e.g.
+//   var actualSlot=0;  var bootUpSlot=0;  var slotQuantity=3;
+//   var slot_description=new Array(3);  slot_description [0]='Fűtés';  ...
+
+// The integer of `var <name>=<int>;` in an HTML/JS text (whitespace tolerant, same
+// whole-identifier rule as parse_js_int_array: "bootUpSlot" does not match
+// "xbootUpSlot"). nullopt = no such declaration, or its value is not an integer.
+std::optional<int> parse_js_int_scalar(std::string_view html, std::string_view name);
+
+// The entries `<name> [<i>]='<text>'` (whitespace allowed before '[' and around '=',
+// single-quoted, \' and \\ unescaped) as index → text. Other lines (e.g. the
+// `var <name>=new Array(3);` declaration) are ignored; a later entry for the same
+// index wins. The name must be the whole identifier.
+std::map<int, std::string> parse_js_indexed_strings(std::string_view html, std::string_view name);
+
+struct SlotInfo {
+    int                index = 0;        // actualSlot (0-based)
+    std::optional<int> boot_index;       // bootUpSlot
+    std::optional<int> count;            // slotQuantity
+    std::string        name;             // slot_description[index], else "Slot <index+1>"
+};
+
+// The active slot of the page; nullopt when actualSlot is missing (or negative).
+std::optional<SlotInfo> parse_active_slot(std::string_view html);
+
+// "<prefix>/<server>/slot/state" (retained, the slot name) and
+// "<prefix>/<server>/slot/attributes" (retained JSON, see make_slot_attributes).
+std::string slot_state_topic(std::string_view prefix, std::string_view server_id);
+std::string slot_attributes_topic(std::string_view prefix, std::string_view server_id);
+// "homeassistant/sensor/myio_<server>_active_slot/config"
+std::string slot_discovery_topic(std::string_view server_id);
+// {"index":N,"boot_index":N,"count":N} — missing values omitted.
+std::string make_slot_attributes(const SlotInfo& info);
+// Server-level sensor "Aktív slot": no entity_category (primary info), no device_class,
+// icon mdi:format-list-numbered, state = slot name, json_attributes_topic = attributes.
+// unique_id = myio_<server>_active_slot.
+std::string make_slot_discovery(const DiscoveryContext& ctx);
 
 // Thermostat threshold sensor (see "Thermostat thresholds" above): read-only,
 // "<output name> bekapcsolási|kikapcsolási küszöb", device_class temperature, °C,
