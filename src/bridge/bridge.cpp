@@ -922,7 +922,9 @@ net::awaitable<void> ServerBridge::apply_slot(std::optional<SlotInfo> slot) {
     if (!slot) {
         // The page no longer carries a slot: remove what was published.
         const bool was_discovered = slot_discovered_;
+        const bool had_slot       = slot_.has_value();
         slot_.reset();
+        if (had_slot) write_status_file();   // the Web UI must stop showing the old slot
         slot_discovered_ = false;
         last_slot_state_.reset();
         last_slot_attrs_.reset();
@@ -938,7 +940,12 @@ net::awaitable<void> ServerBridge::apply_slot(std::optional<SlotInfo> slot) {
         co_return;
     }
 
+    const bool status_changed = !slot_ || slot_->index != slot->index || slot_->name != slot->name
+                             || slot_->boot_index != slot->boot_index
+                             || slot_->boot_name != slot->boot_name;
     slot_ = std::move(slot);
+    // A slot change rewrites the status file immediately (not only at the next diag refresh).
+    if (status_changed) write_status_file();
     const auto info  = *slot_;   // copy: slot_ may change while a publish awaits
     const auto attrs = make_slot_attributes(info);
     myio::log("[{}] Active slot: {} ({})", cfg_.server_id, info.index, info.name);
@@ -1029,7 +1036,7 @@ void ServerBridge::write_status_file() {
     try {
         write_status_file_atomic(status_dir_, cfg_.server_id + ".json",
                                  make_server_status_state(current_diag(), status_online_,
-                                                          std::chrono::system_clock::now()));
+                                                          std::chrono::system_clock::now(), slot_));
         status_last_error_.clear();
     } catch (const std::exception& ex) {
         const std::string msg = myio::short_what(ex);

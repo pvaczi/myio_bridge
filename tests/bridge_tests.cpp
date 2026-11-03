@@ -627,6 +627,19 @@ void test_diagnostics() {
     st = json::parse(bridge::make_server_status_state(bridge::ServerDiag{}, false, now)).as_object();
     CHECK(st.at("online").as_bool() == false);
     CHECK(st.at("last_poll_ok").is_null());
+    CHECK(!st.contains("slot"));   // no slot known -> no "slot" key
+
+    // Slot object: active + boot; boot omitted when bootUpSlot is unknown.
+    bridge::SlotInfo si;
+    si.index = 3; si.name = "Esti"; si.boot_index = 1; si.boot_name = "Alap";
+    st = json::parse(bridge::make_server_status_state(d, true, now, si)).as_object();
+    const auto& sl = st.at("slot").as_object();
+    CHECK(sl.at("active").at("index").as_int64() == 3 && sl.at("active").at("name").as_string() == "Esti");
+    CHECK(sl.at("boot").at("index").as_int64() == 1 && sl.at("boot").at("name").as_string() == "Alap");
+    si.boot_index.reset(); si.boot_name.clear();
+    st = json::parse(bridge::make_server_status_state(d, true, now, si)).as_object();
+    CHECK(st.at("slot").as_object().contains("active") && !st.at("slot").as_object().contains("boot"));
+    CHECK(st.at("online").as_bool() == true && st.at("written_at").as_string() == "2026-10-14T08:00:00Z");
 
     bridge::DiscoveryContext ctx;
     ctx.prefix         = "myio";
@@ -1044,8 +1057,29 @@ void test_active_slot() {
     CHECK(s.has_value());
     if (s) {
         CHECK(s->index == 0 && s->name == "Fűtés");
-        CHECK(s->boot_index == 0 && s->count == 3);
+        CHECK(s->boot_index == 0 && s->count == 3 && s->boot_name == "Fűtés");
     }
+
+    // count = number of 1 entries in slotExist, NOT slotQuantity (live lighting controller:
+    // actualSlot=3, slotQuantity=2, name in slot_description[3], boot slot 1)
+    const auto live = parse_active_slot(
+        "var actualSlot=3;var bootUpSlot=1;var slotQuantity=2;\n"
+        "var slot_description=new Array(4);\n"
+        "slot_description [0]='A';slot_description [1]='Boot';\n"
+        "slot_description [3]='Esti';\n"
+        "var slotExist=[1,1,1,1,0,0];");
+    CHECK(live && live->index == 3 && live->name == "Esti" && live->count == 4);
+    CHECK(live && live->boot_index == 1 && live->boot_name == "Boot");
+    // slotQuantity alone gives no count; an empty / absent slotExist
+    CHECK(!parse_active_slot("var actualSlot=0;var slotQuantity=3;")->count);
+    CHECK(parse_active_slot("var actualSlot=0;var slotExist=[];")->count == 0);
+    // boot name fallbacks: empty description, unknown index; no bootUpSlot -> no boot name
+    const auto b1 = parse_active_slot("var actualSlot=0;var bootUpSlot=2;slot_description [2]=' ';");
+    CHECK(b1 && b1->boot_index == 2 && b1->boot_name == "Slot 3");
+    const auto b2 = parse_active_slot("var actualSlot=0;var bootUpSlot=7;");
+    CHECK(b2 && b2->boot_name == "Slot 8");
+    const auto b3 = parse_active_slot("var actualSlot=0;");
+    CHECK(b3 && !b3->boot_index && b3->boot_name.empty());
 
     // Another active slot, boot slot differs
     const auto s2 = parse_active_slot(std::string(kSlotPage) + "var actualSlot=2;var bootUpSlot=1;");
@@ -1076,7 +1110,8 @@ void test_active_slot() {
 
     const auto attrs = json::parse(bridge::make_slot_attributes(*s)).as_object();
     CHECK(attrs.at("index").as_int64() == 0 && attrs.at("boot_index").as_int64() == 0
-          && attrs.at("count").as_int64() == 3 && attrs.size() == 3);
+          && attrs.at("boot_name").as_string() == "Fűtés"
+          && attrs.at("count").as_int64() == 3 && attrs.size() == 4);
     const auto partial = json::parse(bridge::make_slot_attributes(*f1)).as_object();
     CHECK(partial.size() == 1 && partial.at("index").as_int64() == 1);
 

@@ -1046,7 +1046,7 @@ function srvBadge(text, cls) {
   return b;
 }
 
-function srvField(label, value, wide) {
+function srvField(label, value, wide, title) {
   const d = document.createElement('div');
   if (wide) d.className = 'srv-wide';
   const k = document.createElement('span');
@@ -1055,6 +1055,7 @@ function srvField(label, value, wide) {
   const v = document.createElement('span');
   v.className = 'srv-v';
   v.textContent = value;
+  if (title) d.title = title;
   d.append(k, v);
   return d;
 }
@@ -1097,10 +1098,20 @@ function renderServers(d) {
       srvField('Utolsó poll', lastPoll),
       srvField('Késleltetés', s.poll_latency_ms == null ? '–' : s.poll_latency_ms + ' ms'),
       srvField('Hibák', s.consecutive_errors + ' egymás után / ' + s.total_errors + ' összesen'),
-      srvField('Firmware', s.firmware || 'ismeretlen'),
-      srvField('Utolsó hiba', s.last_error || 'nincs', true));
+      srvField('Firmware', s.firmware || 'ismeretlen'));
+    // Slot (status file "slot" object); nothing is shown when it is absent.
+    const act = s.slot && s.slot.active, boot = s.slot && s.slot.boot;
+    if (act) grid.append(srvField('Aktív slot', act.name, false, 'sorszám: ' + act.index));
+    if (boot) grid.append(srvField('Indítási slot', boot.name, false, 'sorszám: ' + boot.index));
+    grid.append(srvField('Utolsó hiba', s.last_error || 'nincs', true));
     if (s.info_error) grid.append(srvField('Info hiba', s.info_error, true));
     tile.append(grid);
+    if (act && boot && act.index !== boot.index) {
+      const w = document.createElement('div');
+      w.className = 'alert alert-warning py-1 px-2 mt-2 mb-0 small';
+      w.textContent = 'Eltér: áramszünet után a(z) „' + boot.name + '” slot töltődik be';
+      tile.append(w);
+    }
     list.append(tile);
   }
 }

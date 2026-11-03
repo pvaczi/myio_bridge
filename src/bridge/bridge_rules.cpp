@@ -2,6 +2,7 @@
 
 #include <boost/json/serialize.hpp>
 
+#include <algorithm>
 #include <charconv>
 #include <format>
 #include <stdexcept>
@@ -389,10 +390,18 @@ std::string make_server_diag_state(const ServerDiag& d) {
 }
 
 std::string make_server_status_state(const ServerDiag& d, std::optional<bool> online,
-                                     std::chrono::system_clock::time_point now) {
+                                     std::chrono::system_clock::time_point now,
+                                     const std::optional<SlotInfo>& slot) {
     auto o = server_diag_object(d);
     o["online"]     = online ? json::value(*online) : json::value(nullptr);
     o["written_at"] = format_iso_utc(now);
+    if (slot) {
+        json::object s;
+        s["active"] = json::object{{"index", slot->index}, {"name", slot->name}};
+        if (slot->boot_index)
+            s["boot"] = json::object{{"index", *slot->boot_index}, {"name", slot->boot_name}};
+        o["slot"] = std::move(s);
+    }
     return json::serialize(o);
 }
 
@@ -728,12 +737,20 @@ std::optional<SlotInfo> parse_active_slot(std::string_view html) {
     SlotInfo info;
     info.index      = *actual;
     info.boot_index = parse_js_int_scalar(html, "bootUpSlot");
-    info.count      = parse_js_int_scalar(html, "slotQuantity");
+    if (const auto exist = parse_js_int_array(html, "slotExist"))
+        info.count = static_cast<int>(std::count(exist->begin(), exist->end(), 1));
 
     const auto names = parse_js_indexed_strings(html, "slot_description");
-    if (const auto it = names.find(info.index); it != names.end())
-        info.name = std::string(trim(it->second));
-    if (info.name.empty()) info.name = std::format("Slot {}", info.index + 1);
+    const auto name_of = [&](int index) {
+        std::string n;
+        if (const auto it = names.find(index); it != names.end())
+            n = std::string(trim(it->second));
+        if (n.empty()) n = std::format("Slot {}", index + 1);
+        return n;
+    };
+    info.name = name_of(info.index);
+    if (info.boot_index && *info.boot_index >= 0) info.boot_name = name_of(*info.boot_index);
+    else info.boot_index.reset();
     return info;
 }
 
@@ -752,7 +769,10 @@ std::string slot_discovery_topic(std::string_view server_id) {
 std::string make_slot_attributes(const SlotInfo& info) {
     json::object o;
     o["index"] = info.index;
-    if (info.boot_index) o["boot_index"] = *info.boot_index;
+    if (info.boot_index) {
+        o["boot_index"] = *info.boot_index;
+        o["boot_name"]  = info.boot_name;
+    }
     if (info.count)      o["count"]      = *info.count;
     return json::serialize(o);
 }

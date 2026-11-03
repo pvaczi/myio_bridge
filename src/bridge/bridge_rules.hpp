@@ -196,7 +196,7 @@ void add_entity_common(boost::json::object& o, const DiscoveryContext& ctx,
 
 // ── Active slot (read-only, from the same GET /output page) ───────────────────
 // The page carries the controller's active slot (program) as JavaScript, e.g.
-//   var actualSlot=0;  var bootUpSlot=0;  var slotQuantity=3;
+//   var actualSlot=0;  var bootUpSlot=0;  var slotExist=[1,1,1,0,0,...];
 //   var slot_description=new Array(3);  slot_description [0]='Fűtés';  ...
 
 // The integer of `var <name>=<int>;` in an HTML/JS text (whitespace tolerant, same
@@ -213,8 +213,12 @@ std::map<int, std::string> parse_js_indexed_strings(std::string_view html, std::
 struct SlotInfo {
     int                index = 0;        // actualSlot (0-based)
     std::optional<int> boot_index;       // bootUpSlot
-    std::optional<int> count;            // slotQuantity
+    // Number of 1 entries in `var slotExist=[...]` (NOT slotQuantity: on the lighting
+    // controller actualSlot=3 with slotQuantity=2). nullopt = no slotExist array.
+    std::optional<int> count;
     std::string        name;             // slot_description[index], else "Slot <index+1>"
+    // slot_description[boot_index], else "Slot <boot_index+1>"; empty = boot slot unknown.
+    std::string        boot_name;
 };
 
 // The active slot of the page; nullopt when actualSlot is missing (or negative).
@@ -226,7 +230,7 @@ std::string slot_state_topic(std::string_view prefix, std::string_view server_id
 std::string slot_attributes_topic(std::string_view prefix, std::string_view server_id);
 // "homeassistant/sensor/myio_<server>_active_slot/config"
 std::string slot_discovery_topic(std::string_view server_id);
-// {"index":N,"boot_index":N,"count":N} — missing values omitted.
+// {"index":N,"boot_index":N,"boot_name":"...","count":N} — missing values omitted.
 std::string make_slot_attributes(const SlotInfo& info);
 // Server-level sensor "Aktív slot": no entity_category (primary info), no device_class,
 // icon mdi:format-list-numbered, state = slot name, json_attributes_topic = attributes.
@@ -285,9 +289,12 @@ struct ServerDiag {
 std::string server_diag_topic(std::string_view prefix, std::string_view server_id);
 std::string make_server_diag_state(const ServerDiag& d);
 // Content of <data dir>/status/<server_id>.json (read by the Web UI): the diag
-// fields plus "online" (null = not yet determined) and "written_at".
+// fields plus "online" (null = not yet determined), "written_at" and, when the
+// active slot is known, "slot": {"active":{"index":N,"name":"..."},
+// "boot":{"index":N,"name":"..."}} ("boot" omitted when bootUpSlot is unknown).
 std::string make_server_status_state(const ServerDiag& d, std::optional<bool> online,
-                                     std::chrono::system_clock::time_point now);
+                                     std::chrono::system_clock::time_point now,
+                                     const std::optional<SlotInfo>& slot = std::nullopt);
 
 // The bridge's MQTT connection as the Web UI shows it (<data dir>/status/mqtt.json).
 // Never carries the MQTT user or password.
