@@ -147,6 +147,12 @@ static ServerConfig parse_server(const json::object& o) {
                 "Server '{}': 'log_debug' must be true or false", sc.server_id));
         sc.log_debug = v->get_bool();
     }
+    if (const auto* v = o.if_contains("threshold_write")) {
+        if (!v->is_bool())
+            throw std::runtime_error(std::format(
+                "Server '{}': 'threshold_write' must be true or false", sc.server_id));
+        sc.threshold_write = v->get_bool();
+    }
 
     if (sc.server_id.empty() || sc.host.empty())
         throw std::runtime_error("Server entry requires 'id' and 'host'");

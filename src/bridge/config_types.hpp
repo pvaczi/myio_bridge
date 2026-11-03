@@ -88,6 +88,7 @@ struct ServerConfig {
     int                   coalesce_window_ms   = 5;     // wait after 1st command to batch siblings
                                                         // into one POST; 0 = no batching
     bool                  log_debug            = false; // [coalesce]/[latency] measurement lines
+    bool                  threshold_write      = false; // HA number entities that write the thermostat thresholds
 
     // ALL entries are loaded (enabled and disabled alike) so the bridge
     // can send MQTT undiscovery messages for disabled entries.

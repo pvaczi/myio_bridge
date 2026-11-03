@@ -30,6 +30,7 @@ struct InputServer {
     double        sensor_log_threshold  = 0.1;
     bool          log_startup_sync      = false;
     bool          log_debug             = false;
+    bool          threshold_write       = false;
     int           coalesce_window_ms    = 5;
 };
 
@@ -78,6 +79,7 @@ static InputConfig read_input(const std::string& path) {
             }
             if (const auto* v = s.if_contains("log_startup_sync"))    if (v->is_bool()) is.log_startup_sync = v->as_bool();
             if (const auto* v = s.if_contains("log_debug"))           if (v->is_bool()) is.log_debug        = v->as_bool();
+            if (const auto* v = s.if_contains("threshold_write"))     if (v->is_bool()) is.threshold_write  = v->as_bool();
             if (const auto* v = s.if_contains("coalesce_window_ms"))   is.coalesce_window_ms   = static_cast<int>(v->as_int64());
             if (is.id.empty() || is.host.empty())
                 throw std::runtime_error("Server entry requires 'id' and 'host'");
@@ -404,6 +406,7 @@ static json::object make_server_entry(const InputServer& is,
     srv["sensor_log_threshold"] = is.sensor_log_threshold;
     srv["log_startup_sync"]     = is.log_startup_sync;
     srv["log_debug"]            = is.log_debug;
+    srv["threshold_write"]      = is.threshold_write;
     srv["coalesce_window_ms"]   = is.coalesce_window_ms;
 
     // PCA outputs – named only; cover endpoints get "cover_up" / "cover_down" type

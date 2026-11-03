@@ -244,6 +244,51 @@ std::string make_slot_discovery(const DiscoveryContext& ctx);
 std::string make_threshold_discovery(const DiscoveryContext& ctx, OutputKind kind, int id,
                                      std::string_view output_name, ThresholdKind which);
 
+// ── Writable thermostat thresholds (opt-in: per-server "threshold_write") ─────
+// One HA `number` per threshold sensor; it shows the sensor's state topic and
+// takes the new value on a command topic below the same threshold prefix.
+
+inline constexpr int kThresholdMinC = 0;    // accepted / offered range, °C
+inline constexpr int kThresholdMaxC = 90;
+
+// "<prefix>/<server>/threshold/<relay|pca>/<id>/<on|off>/set"
+std::string threshold_command_topic(std::string_view prefix, std::string_view server_id,
+                                    OutputKind kind, int id, ThresholdKind which);
+// "homeassistant/number/myio_<server>_<relay|pca>_<id>_thr_<on|off>_set/config"
+std::string threshold_number_discovery_topic(std::string_view server_id, OutputKind kind,
+                                             int id, ThresholdKind which);
+// The sensor's JSON plus a command topic: unique_id = <sensor uid>_set, name = <sensor
+// name> + " (állítás)", same state_topic, same device/availability, min 0, max 90,
+// step 0.1, mode box, °C, device_class temperature, entity_category config.
+std::string make_threshold_number_discovery(const DiscoveryContext& ctx, OutputKind kind,
+                                            int id, std::string_view output_name,
+                                            ThresholdKind which);
+
+// The retained payload for the number's discovery topic: the discovery JSON when
+// `write_enabled`, else "" (an empty retained payload removes a previously created entity).
+std::string threshold_number_payload(const DiscoveryContext& ctx, OutputKind kind, int id,
+                                     std::string_view output_name, ThresholdKind which,
+                                     bool write_enabled);
+
+struct ThresholdTarget {
+    OutputKind    kind;    // Relay or Pca
+    int           id;      // relay 1.., PCA 2001.. (as in the topic)
+    ThresholdKind which;
+};
+// Parses a threshold command topic of exactly 7 levels
+// "<prefix>/<server>/threshold/<relay|pca>/<id>/<on|off>/set" (the prefix and server
+// levels are not checked). nullopt = anything else (e.g. the 6-level state topic).
+std::optional<ThresholdTarget> parse_threshold_command_topic(std::string_view topic);
+
+// A decimal °C payload ('.' or ',' separator) as tenths of °C: std::lround(value * 10).
+// nullopt = not a number, or outside 0..90 °C.
+std::optional<int> parse_threshold_payload(std::string_view payload);
+
+// The device command: relay on "min_temp_ON*<id>=<tenths>", relay off
+// "max_temp_OFF*<id>=<tenths>", PCA on "PCA_temp_MIN*<id>=<tenths>", PCA off
+// "PCA_temp_MAX*<id>=<tenths>" (id as in the target, PCA = the raw 2001+ id).
+std::string make_threshold_command(const ThresholdTarget& target, int tenths);
+
 // Bridge connectivity binary_sensor (diagnostic) — registers the bridge device.
 std::string bridge_status_discovery_topic();
 std::string make_bridge_status_discovery(std::string_view prefix,

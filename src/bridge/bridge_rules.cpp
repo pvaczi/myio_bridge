@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <format>
 #include <stdexcept>
 #include <string>
@@ -647,6 +648,98 @@ std::string make_threshold_discovery(const DiscoveryContext& ctx, OutputKind kin
     o["entity_category"]           = "diagnostic";
     add_entity_common(o, ctx, "sensor", uid);
     return json::serialize(o);
+}
+
+// ── Writable thermostat thresholds ───────────────────────────────────────────
+
+std::string threshold_command_topic(std::string_view prefix, std::string_view server_id,
+                                    OutputKind kind, int id, ThresholdKind which) {
+    return threshold_state_topic(prefix, server_id, kind, id, which) + "/set";
+}
+
+std::string threshold_number_discovery_topic(std::string_view server_id, OutputKind kind,
+                                             int id, ThresholdKind which) {
+    return std::format("homeassistant/number/myio_{}_{}_{}_thr_{}_set/config", server_id,
+                       kind_label(kind), id, which_label(which));
+}
+
+std::string make_threshold_number_discovery(const DiscoveryContext& ctx, OutputKind kind,
+                                            int id, std::string_view output_name,
+                                            ThresholdKind which) {
+    const std::string base = std::format("myio_{}_{}_{}", ctx.server_id, kind_label(kind), id);
+    const std::string uid  = std::format("{}_thr_{}_set", base, which_label(which));
+    const std::string_view label = which == ThresholdKind::On ? "bekapcsolási küszöb"
+                                                              : "kikapcsolási küszöb";
+    json::object o;
+    o["name"]                = std::format("{} {} (állítás)",
+                                           output_name.empty() ? base : std::string(output_name), label);
+    o["unique_id"]           = uid;
+    o["state_topic"]         = threshold_state_topic(ctx.prefix, ctx.server_id, kind, id, which);
+    o["command_topic"]       = threshold_command_topic(ctx.prefix, ctx.server_id, kind, id, which);
+    o["min"]                 = kThresholdMinC;
+    o["max"]                 = kThresholdMaxC;
+    o["step"]                = 0.1;
+    o["mode"]                = "box";
+    o["unit_of_measurement"] = "°C";
+    o["device_class"]        = "temperature";
+    o["entity_category"]     = "config";
+    add_entity_common(o, ctx, "number", uid);
+    return json::serialize(o);
+}
+
+std::string threshold_number_payload(const DiscoveryContext& ctx, OutputKind kind, int id,
+                                     std::string_view output_name, ThresholdKind which,
+                                     bool write_enabled) {
+    if (!write_enabled) return {};
+    return make_threshold_number_discovery(ctx, kind, id, output_name, which);
+}
+
+std::optional<ThresholdTarget> parse_threshold_command_topic(std::string_view topic) {
+    std::vector<std::string_view> parts;
+    std::size_t start = 0;
+    while (true) {
+        const auto slash = topic.find('/', start);
+        if (slash == std::string_view::npos) { parts.push_back(topic.substr(start)); break; }
+        parts.push_back(topic.substr(start, slash - start));
+        start = slash + 1;
+    }
+    if (parts.size() != 7 || parts[2] != "threshold" || parts[6] != "set") return std::nullopt;
+
+    ThresholdTarget t{};
+    if      (parts[3] == "relay") t.kind = OutputKind::Relay;
+    else if (parts[3] == "pca")   t.kind = OutputKind::Pca;
+    else return std::nullopt;
+
+    const auto id_str = parts[4];
+    if (id_str.empty()) return std::nullopt;
+    const auto [ptr, ec] = std::from_chars(id_str.data(), id_str.data() + id_str.size(), t.id);
+    if (ec != std::errc{} || ptr != id_str.data() + id_str.size() || t.id < 1)
+        return std::nullopt;
+
+    if      (parts[5] == "on")  t.which = ThresholdKind::On;
+    else if (parts[5] == "off") t.which = ThresholdKind::Off;
+    else return std::nullopt;
+    return t;
+}
+
+std::optional<int> parse_threshold_payload(std::string_view payload) {
+    std::string p(trim(payload));
+    if (p.empty()) return std::nullopt;
+    std::replace(p.begin(), p.end(), ',', '.');
+    double value = 0.0;
+    const auto [ptr, ec] = std::from_chars(p.data(), p.data() + p.size(), value);
+    if (ec != std::errc{} || ptr != p.data() + p.size()) return std::nullopt;
+    if (!std::isfinite(value) || value < kThresholdMinC || value > kThresholdMaxC)
+        return std::nullopt;
+    return static_cast<int>(std::lround(value * 10.0));
+}
+
+std::string make_threshold_command(const ThresholdTarget& target, int tenths) {
+    const bool on = target.which == ThresholdKind::On;
+    const std::string_view name = target.kind == OutputKind::Pca
+        ? (on ? "PCA_temp_MIN" : "PCA_temp_MAX")
+        : (on ? "min_temp_ON"  : "max_temp_OFF");
+    return std::format("{}*{}={}", name, target.id, tenths);
 }
 
 // ── Active slot ───────────────────────────────────────────────────────────────

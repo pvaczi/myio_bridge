@@ -986,6 +986,94 @@ void test_threshold_entities() {
     CHECK(off.at("unique_id").as_string() == "myio_heating_relay_3_thr_off");
 }
 
+void test_threshold_write_config() {
+    CHECK(!config::parse_bridge_config(make_config()).servers[0].threshold_write);
+    CHECK(config::parse_bridge_config(make_config("", R"(, "threshold_write": true)")).servers[0].threshold_write);
+    CHECK(!config::parse_bridge_config(make_config("", R"(, "threshold_write": false)")).servers[0].threshold_write);
+    CHECK(rejected_with(make_config("", R"(, "threshold_write": "yes")"), "threshold_write"));
+    CHECK(rejected_with(make_config("", R"(, "threshold_write": 1)"), "threshold_write"));
+}
+
+void test_threshold_write() {
+    using bridge::OutputKind;
+    using bridge::ThresholdKind;
+    using bridge::ThresholdTarget;
+    namespace json = boost::json;
+
+    // Topics
+    CHECK(bridge::threshold_command_topic("myio", "heating", OutputKind::Pca, 2010, ThresholdKind::On)
+          == "myio/heating/threshold/pca/2010/on/set");
+    CHECK(bridge::threshold_number_discovery_topic("heating", OutputKind::Relay, 3, ThresholdKind::Off)
+          == "homeassistant/number/myio_heating_relay_3_thr_off_set/config");
+
+    const auto t1 = bridge::parse_threshold_command_topic("myio/heating/threshold/relay/3/on/set");
+    CHECK(t1 && t1->kind == OutputKind::Relay && t1->id == 3 && t1->which == ThresholdKind::On);
+    const auto t2 = bridge::parse_threshold_command_topic("myio/heating/threshold/pca/2010/off/set");
+    CHECK(t2 && t2->kind == OutputKind::Pca && t2->id == 2010 && t2->which == ThresholdKind::Off);
+    CHECK(!bridge::parse_threshold_command_topic("myio/heating/threshold/relay/3/on"));        // state topic
+    CHECK(!bridge::parse_threshold_command_topic("myio/heating/threshold/relay/3/on/set/x"));
+    CHECK(!bridge::parse_threshold_command_topic("myio/heating/threshold/pwm/3/on/set"));
+    CHECK(!bridge::parse_threshold_command_topic("myio/heating/threshold/relay/x/on/set"));
+    CHECK(!bridge::parse_threshold_command_topic("myio/heating/threshold/relay/0/on/set"));
+    CHECK(!bridge::parse_threshold_command_topic("myio/heating/threshold/relay/3/mid/set"));
+    CHECK(!bridge::parse_threshold_command_topic("myio/heating/switch/relay/3/on/set"));
+
+    // Payload → tenths
+    CHECK(bridge::parse_threshold_payload("20.3") == 203);
+    CHECK(bridge::parse_threshold_payload("20,3") == 203);
+    CHECK(bridge::parse_threshold_payload(" 21 ") == 210);
+    CHECK(bridge::parse_threshold_payload("19.75") == 198);
+    CHECK(bridge::parse_threshold_payload("0") == 0);
+    CHECK(bridge::parse_threshold_payload("90") == 900);
+    CHECK(!bridge::parse_threshold_payload(""));
+    CHECK(!bridge::parse_threshold_payload("abc"));
+    CHECK(!bridge::parse_threshold_payload("20.3x"));
+    CHECK(!bridge::parse_threshold_payload("nan"));
+    CHECK(!bridge::parse_threshold_payload("-1"));
+    CHECK(!bridge::parse_threshold_payload("91"));
+    CHECK(!bridge::parse_threshold_payload("90.5"));
+
+    // Device commands
+    CHECK(bridge::make_threshold_command({OutputKind::Relay, 3, ThresholdKind::On}, 203)
+          == "min_temp_ON*3=203");
+    CHECK(bridge::make_threshold_command({OutputKind::Relay, 3, ThresholdKind::Off}, 198)
+          == "max_temp_OFF*3=198");
+    CHECK(bridge::make_threshold_command({OutputKind::Pca, 2010, ThresholdKind::On}, 210)
+          == "PCA_temp_MIN*2010=210");
+    CHECK(bridge::make_threshold_command({OutputKind::Pca, 2010, ThresholdKind::Off}, 225)
+          == "PCA_temp_MAX*2010=225");
+
+    // Number discovery
+    bridge::DiscoveryContext ctx;
+    ctx.prefix = "myio"; ctx.server_id = "heating"; ctx.host = "10.0.0.5"; ctx.bridge_version = "v1";
+    const auto num = json::parse(bridge::make_threshold_number_discovery(
+        ctx, OutputKind::Pca, 2010, "Nappali", ThresholdKind::On)).as_object();
+    const auto sensor = json::parse(bridge::make_threshold_discovery(
+        ctx, OutputKind::Pca, 2010, "Nappali", ThresholdKind::On)).as_object();
+    CHECK(num.at("unique_id").as_string() == "myio_heating_pca_2010_thr_on_set");
+    CHECK(num.at("name").as_string() == "Nappali bekapcsolási küszöb (állítás)");
+    CHECK(num.at("state_topic") == sensor.at("state_topic"));
+    CHECK(num.at("command_topic").as_string() == "myio/heating/threshold/pca/2010/on/set");
+    CHECK(num.at("min").as_int64() == 0);
+    CHECK(num.at("max").as_int64() == 90);
+    CHECK(num.at("step").as_double() == 0.1);
+    CHECK(num.at("mode").as_string() == "box");
+    CHECK(num.at("unit_of_measurement").as_string() == "°C");
+    CHECK(num.at("device_class").as_string() == "temperature");
+    CHECK(num.at("entity_category").as_string() == "config");
+    CHECK(num.at("device") == sensor.at("device"));
+    CHECK(num.at("availability") == sensor.at("availability"));
+    CHECK(num.contains("default_entity_id") && num.at("default_entity_id").as_string().starts_with("number."));
+
+    // Disabled: an empty retained payload (removes a previously created entity)
+    CHECK(bridge::threshold_number_payload(ctx, OutputKind::Pca, 2010, "Nappali",
+                                           ThresholdKind::On, false).empty());
+    CHECK(bridge::threshold_number_payload(ctx, OutputKind::Pca, 2010, "Nappali",
+                                           ThresholdKind::On, true)
+          == bridge::make_threshold_number_discovery(ctx, OutputKind::Pca, 2010, "Nappali",
+                                                     ThresholdKind::On));
+}
+
 // The slot lines of the real heating controller page (GET /output, 2026.11.03).
 constexpr const char* kSlotPage =
     "<script>\n"
@@ -1153,6 +1241,7 @@ int main() {
     test_poll_interval();
     test_coalesce_window();
     test_log_debug();
+    test_threshold_write_config();
     test_required_sections();
     test_topic_prefix();
     test_server_id_and_ports();
@@ -1182,6 +1271,7 @@ int main() {
     test_thermostat_mapping();
     test_thermostat_mapping_edges();
     test_threshold_entities();
+    test_threshold_write();
     test_js_scalar_and_strings();
     test_active_slot();
     test_extract_http_body();

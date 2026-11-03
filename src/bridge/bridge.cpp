@@ -788,6 +788,13 @@ net::awaitable<void> ServerBridge::publish_threshold_discovery() {
                 co_await publisher_->async_publish(
                     threshold_discovery_topic(cfg_.server_id, t.kind, t.id, which),
                     make_threshold_discovery(ctx, t.kind, t.id, name, which), true);
+                // Writable number: published when opted in; otherwise an empty
+                // retained payload removes one created by an earlier run.
+                co_await publisher_->async_publish(
+                    threshold_number_discovery_topic(cfg_.server_id, t.kind, t.id, which),
+                    threshold_number_payload(ctx, t.kind, t.id, name, which,
+                                             cfg_.threshold_write),
+                    true);
             } catch (const std::exception& e) {
                 if (failures++ == 0) first_error = myio::short_what(e);
             }
@@ -868,6 +875,8 @@ net::awaitable<void> ServerBridge::apply_thresholds(std::vector<ThermostatThresh
             tasks.push_back([this, kind = kind, id = id, which]() -> net::awaitable<void> {
                 co_await publisher_->async_publish(
                     threshold_discovery_topic(cfg_.server_id, kind, id, which), "", true);
+                co_await publisher_->async_publish(
+                    threshold_number_discovery_topic(cfg_.server_id, kind, id, which), "", true);
             });
         }
     }
@@ -1485,6 +1494,38 @@ ServerBridge::prepare_command(const std::string& topic,
             return pcmd;
         }
         return std::nullopt;
+    }
+
+    // Thermostat threshold write (opt-in number entity), 7 levels:
+    //   {prefix}/{srv}/threshold/{relay|pca}/{id}/{on|off}/set
+    // Handled before the generic 5-level `/set` check below. The 6-level state topics
+    // (the bridge's own retained publishes echoed back) are not commands.
+    if (entity_type == "threshold") {
+        const auto target = parse_threshold_command_topic(topic);
+        if (!target) return std::nullopt;
+        if (!cfg_.threshold_write) return drop("threshold_write is off for this server");
+        const bool known = std::ranges::any_of(thresholds_, [&](const ThermostatThreshold& t) {
+            return t.kind == target->kind && t.id == target->id;
+        });
+        if (!known) return drop("output has no thermostat threshold");
+        const auto tenths = parse_threshold_payload(payload);
+        if (!tenths)
+            return drop(std::format("threshold payload must be a number {}..{} (°C)",
+                                    kThresholdMinC, kThresholdMaxC));
+
+        PreparedCommand pcmd;
+        pcmd.post = make_threshold_command(*target, *tenths);
+        myio::log("[{}] [broker to myIO] Threshold {} {} {} ({}) → {}", cfg_.server_id,
+                  target->kind == OutputKind::Pca ? "pca" : "relay", target->id,
+                  target->which == ThresholdKind::On ? "on" : "off",
+                  output_name(target->kind, target->id), pcmd.post);
+        pcmd.publish_state = [this]() -> net::awaitable<void> {
+            // No optimistic state: the real values are re-read from GET /output at the
+            // next poll (one re-read however many thresholds the batch wrote).
+            output_page_pending_ = true;
+            co_return;
+        };
+        return pcmd;
     }
 
     // Every other command addresses one numbered output:
