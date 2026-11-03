@@ -372,7 +372,7 @@ document.addEventListener('mouseup', () => { dragState = null; });
 
 async function fetchStatus() {
   try {
-    const r = await fetch('/api/bridge/status');
+    const r = await fetch('api/bridge/status');
     const d = await r.json();
     bridgeActive = d.status === 'active';
     const dot = document.getElementById('status-dot');
@@ -406,7 +406,7 @@ function switchMode(newMode) {
 async function bridgeAction(action) {
   const errEl = document.getElementById('bridge-error');
   errEl.style.display = 'none';
-  const d = await api('/api/bridge/' + action, { method: 'POST' });
+  const d = await api('api/bridge/' + action, { method: 'POST' });
   if (!d.ok) { errEl.textContent = d.error || 'Hiba'; errEl.style.display = ''; }
   await fetchStatus();
 }
@@ -883,7 +883,7 @@ function switchBridgeEditorMode(newMode) {
 }
 
 async function loadBridgeConfig() {
-  const d = await api('/api/config/bridge');
+  const d = await api('api/config/bridge');
   const content = d.ok ? d.content : ('Hiba: ' + d.error);
   document.getElementById('bridge-config').value = content;
   document.getElementById('bridge-save-fb').textContent = '';
@@ -902,7 +902,7 @@ function backupLabel(name) {
 
 async function loadBridgeBackups() {
   const sel = document.getElementById('bridge-backups');
-  const d = await api('/api/config/bridge/backups');
+  const d = await api('api/config/bridge/backups');
   const list = d.ok ? d.backups : [];
   sel.innerHTML = list.length
     ? list.map(n => `<option value="${n}">${backupLabel(n)}</option>`).join('')
@@ -914,7 +914,7 @@ async function restoreBridgeBackup() {
   const name = document.getElementById('bridge-backups').value;
   if (!name) return;
   if (!confirm(`Visszaállítod a ${backupLabel(name)} mentést?\n\nA jelenlegi bridge.json előbb mentésre kerül.`)) return;
-  const d = await api('/api/config/bridge/restore', {
+  const d = await api('api/config/bridge/restore', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name })
   });
   if (d.ok) await loadBridgeConfig();
@@ -944,7 +944,7 @@ async function saveBridgeConfig(restart) {
   if (restart) {
     btn.disabled = true; spinner.style.display = ''; label.textContent = 'Újraindítás…';
   }
-  const d = await api('/api/config/bridge' + (restart ? '?restart=1' : ''), {
+  const d = await api('api/config/bridge' + (restart ? '?restart=1' : ''), {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: content
   });
   if (d.ok || d.saved) { setBridgeDirty(false); loadBridgeBackups(); }
@@ -975,7 +975,7 @@ async function saveBridgeConfig(restart) {
 }
 
 async function loadDiscoveryConfig() {
-  const d = await api('/api/config/discovery');
+  const d = await api('api/config/discovery');
   document.getElementById('disc-config').value = d.ok ? d.content : ('Hiba: ' + d.error);
   document.getElementById('disc-save-fb').textContent = '';
 }
@@ -986,7 +986,7 @@ async function saveDiscoveryConfig() {
   try { JSON.parse(content); } catch (e) {
     fb.textContent = 'Érvénytelen JSON: ' + e.message; fb.style.color = 'red'; return;
   }
-  const d = await api('/api/config/discovery', {
+  const d = await api('api/config/discovery', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: content
   });
   fb.textContent = d.ok ? 'Mentve.' : ('Hiba: ' + (d.error || '?'));
@@ -1000,7 +1000,7 @@ async function runDiscovery() {
   const log = document.getElementById('disc-log');
   btn.disabled = true; spinner.style.display = ''; log.value = 'Futás…';
   try {
-    const r = await fetch('/api/discovery/run', { method: 'POST' });
+    const r = await fetch('api/discovery/run', { method: 'POST' });
     const d = await r.json();
     log.value = d.output || (d.ok ? 'Kész.' : 'Hiba.');
   } catch (e) {
@@ -1014,7 +1014,7 @@ async function fetchLog() {
   const el = document.getElementById('bridge-log');
   const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 10;
   try {
-    const r = await fetch('/api/bridge/log');
+    const r = await fetch('api/bridge/log');
     const d = await r.json();
     if (d.ok) { el.value = d.lines; if (atBottom) el.scrollTop = el.scrollHeight; }
   } catch {}
@@ -1028,7 +1028,7 @@ function setLogAuto(on) {
 async function fetchVersion() {
   const el = document.getElementById('app-version');
   try {
-    const r = await fetch('/api/version');
+    const r = await fetch('api/version');
     const d = await r.json();
     el.textContent = (d.ok && d.version) ? d.version.replace(/^myIO bridge\s*/, '') : '?';
   } catch { el.textContent = '?'; }
@@ -1170,7 +1170,7 @@ function renderMqtt(m, now) {
 async function fetchServers() {
   const err = document.getElementById('servers-error');
   const merr = document.getElementById('mqtt-error');
-  const d = await api('/api/servers/status');
+  const d = await api('api/servers/status');
   if (!d.servers) {
     err.textContent = d.error || 'Nem sikerült lekérni a szerverek állapotát';
     err.style.display = '';
