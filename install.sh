@@ -14,8 +14,19 @@ error() { echo "[ERROR] $*" >&2; exit 1; }
 # --- deps ---
 info "Függőségek telepítése..."
 apt-get update -qq
-apt-get install -y -qq curl git python3-venv
+apt-get install -y -qq curl git
 ok "Függőségek kész."
+
+# --- uv + managed CPython 3.15 (system-wide, the venv below is built on it) ---
+export UV_PYTHON_INSTALL_DIR=/opt/uv/python
+grep -q '^UV_PYTHON_INSTALL_DIR=' /etc/environment 2>/dev/null \
+    || echo "UV_PYTHON_INSTALL_DIR=$UV_PYTHON_INSTALL_DIR" >> /etc/environment
+if ! command -v uv &>/dev/null; then
+    info "uv telepítése..."
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+fi
+uv python install 3.15
+ok "uv + Python 3.15 kész."
 
 # --- user ---
 if ! id "$SERVICE_USER" &>/dev/null; then
@@ -35,7 +46,7 @@ ok "Könyvtárak: $INSTALL_DIR"
 info "Web UI másolása..."
 cp -r "$SCRIPT_DIR/web" "$INSTALL_DIR/"
 if [[ ! -d "$INSTALL_DIR/venv" ]]; then
-    python3 -m venv "$INSTALL_DIR/venv"
+    uv venv --python 3.15 --seed "$INSTALL_DIR/venv"
 fi
 "$INSTALL_DIR/venv/bin/pip" install -q -r "$INSTALL_DIR/web/requirements.txt"
 ok "Web UI kész."

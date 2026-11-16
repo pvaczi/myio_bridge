@@ -436,10 +436,10 @@ bash /opt/myio-src/install.sh
 
 `install.sh` does the following:
 
-- Installs `curl`, `git` and `python3-venv`
+- Installs `curl` and `git`, plus `uv` and a uv-managed CPython 3.15 (`/opt/uv/python`)
 - Creates a `myio` system user
 - Creates `/opt/myio-bridge/{bin,data}`
-- Copies the Web UI and sets up a Python venv (pinned deps from `web/requirements.txt`)
+- Copies the Web UI and sets up a Python 3.15 venv (`uv venv --python 3.15 --seed`; pinned deps from `web/requirements.txt`)
 - Generates a Web UI password into `/opt/myio-bridge/data/webui_password` (login: `admin`)
 - Copies `bridge.json` and `discovery_input.json` (only if not already present — existing configs are preserved) and restricts them to mode 600 (they contain the myIO passwords in plain text)
 - Installs `myio-bridge.service` (with systemd sandboxing) and `myio-web.service`
