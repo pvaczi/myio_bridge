@@ -1,5 +1,9 @@
 # myIO Bridge
 
+> **This project is no longer maintained and was archived on 2026.11.26.**
+> myIO controllers with IO Valet firmware 3.12+ have a native, built-in MQTT client with Home Assistant discovery, which is the recommended replacement for this bridge.
+> See the manufacturer's API reference: https://myio.hu/hu/kezikonyvek/myio/API_REFERENCE.md
+
 A bridge that connects [myIO](https://www.myio.hu) smart home controllers to [Home Assistant](https://www.home-assistant.io) via MQTT. It polls myIO servers over HTTP, publishes state changes to MQTT, and forwards Home Assistant commands back to the myIO devices.
 
 ## How it works
